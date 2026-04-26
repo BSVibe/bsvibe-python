@@ -47,14 +47,22 @@ async def _invoke_deps(deps_callable: DepsCallable) -> DepsResult:
 def make_health_router(
     *,
     deps_callable: DepsCallable | None = None,
+    prefix: str = "",
 ) -> APIRouter:
     """Build a FastAPI router that exposes ``/health`` and ``/health/deps``.
 
     When ``deps_callable`` is None, ``/health/deps`` returns 200 with an
     empty map — trivially healthy, so probes do not 404.
+
+    The ``prefix`` is forwarded to ``APIRouter(prefix=prefix)`` so
+    products that mount everything under ``/api`` can pass
+    ``prefix="/api"`` instead of repeating
+    ``include_router(..., prefix="/api")`` at every call site. Default
+    ``""`` keeps the pre-existing ``/health`` mount points
+    (backward-compatible).
     """
 
-    router = APIRouter(tags=["health"])
+    router = APIRouter(prefix=prefix, tags=["health"])
 
     @router.get("/health")
     async def health() -> dict[str, str]:

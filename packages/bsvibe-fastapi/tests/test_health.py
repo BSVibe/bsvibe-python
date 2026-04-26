@@ -150,3 +150,44 @@ class TestRouterPrefix:
         paths = {route.path for route in app.routes}
         assert "/api/health" in paths
         assert "/api/health/deps" in paths
+
+    def test_factory_accepts_prefix_kwarg(self) -> None:
+        # Phase A cleanup — products converged on the `/api/...` URL
+        # convention, so the factory accepts `prefix` directly to save
+        # callers the boilerplate of `include_router(..., prefix="/api")`.
+        app = FastAPI()
+        app.include_router(make_health_router(prefix="/api"))
+        paths = {route.path for route in app.routes}
+        assert "/api/health" in paths
+        assert "/api/health/deps" in paths
+
+    def test_factory_prefix_default_is_empty(self) -> None:
+        # Default behaviour MUST stay backward-compatible — products that
+        # don't pass `prefix` continue to mount at /health and /health/deps.
+        app = FastAPI()
+        app.include_router(make_health_router(prefix=""))
+        paths = {route.path for route in app.routes}
+        assert "/health" in paths
+        assert "/health/deps" in paths
+
+    def test_factory_prefix_with_deps_callable(self) -> None:
+        # `prefix` must compose cleanly with `deps_callable` — products
+        # use them together (BSGateway/BSNexus/BSage/BSupervisor all have
+        # a deps probe under `/api/health/deps`).
+        def deps() -> dict[str, str]:
+            return {"db": "ok"}
+
+        app = FastAPI()
+        app.include_router(make_health_router(prefix="/api", deps_callable=deps))
+
+        client = TestClient(app)
+        liveness = client.get("/api/health")
+        assert liveness.status_code == 200
+        assert liveness.json() == {"status": "ok"}
+
+        readiness = client.get("/api/health/deps")
+        assert readiness.status_code == 200
+        assert readiness.json() == {"db": "ok"}
+
+        # And the un-prefixed paths must NOT be registered.
+        assert client.get("/health").status_code == 404
