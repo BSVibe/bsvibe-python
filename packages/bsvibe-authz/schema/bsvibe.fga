@@ -1,0 +1,122 @@
+model
+  schema 1.1
+
+# BSVibe Authorization Model — single source of truth (Phase 0 P0.4).
+#
+# Source: BSVibe_Auth_Design.md §3 (option C — RBAC + relation + caveat).
+#
+# This file is the canonical schema for production deployments. The copy
+# under `_infra/openfga/bsvibe.fga` is a P0.3 bootstrap seed; from P0.4
+# onwards changes happen here and the _infra copy is updated by follow-up.
+#
+# Conventions
+#   - Permission identifiers follow `<product>.<resource>.<action>` (Auth_Design §2.5).
+#   - 4 fixed roles per Auth_Design §2.3 (owner / admin / member / viewer).
+#   - 4 fixed plans per Auth_Design §2.4 (free / pro / team / enterprise).
+#   - Hierarchy: owner ⊃ admin ⊃ member ⊃ viewer (encoded as `or` unions).
+
+# ─── Identity types ───────────────────────────────────────────────
+
+type user
+
+# Service identity — long-lived JWT subjects (sub: "service:<name>").
+# Granted resource access just like users. See Auth_Design §7.
+type service
+
+# ─── Platform-wide ────────────────────────────────────────────────
+
+type system
+  relations
+    define admin: [user]
+    define audit_reader: [user] or admin
+    define support: [user] or admin
+
+# ─── Subscription plan ────────────────────────────────────────────
+#
+# Plan objects are seeded at bootstrap: plan:free, plan:pro, plan:team,
+# plan:enterprise. Each tenant has exactly one `plan` relation.
+
+type plan
+  relations
+    define subscriber: [tenant]
+
+# ─── Tenant ───────────────────────────────────────────────────────
+
+type tenant
+  relations
+    define owner: [user]
+    define admin: [user] or owner
+    define member: [user, service] or admin
+    define viewer: [user, service] or member
+    define plan: [plan]
+
+# ─── Feature gating (caveat-based) ────────────────────────────────
+#
+# Each feature object resolves enabled_for via its tenant's plan.
+# Example seeds (set with `fga tuple write`):
+#   feature:agent_execute   plan:pro / plan:team / plan:enterprise
+#   feature:multi_tenant_admin   plan:team / plan:enterprise
+#   feature:audit_log   plan:enterprise
+
+type feature
+  relations
+    define enabled_for: [plan]
+
+# ─── BSNexus resources ────────────────────────────────────────────
+
+type project
+  relations
+    define tenant: [tenant]
+    define owner: [user]
+    define editor: [user, service] or owner or admin from tenant
+    define viewer: [user, service] or editor or member from tenant
+
+type task
+  relations
+    define project: [project]
+    define assignee: [user]
+    define viewer: [user, service] or assignee or viewer from project
+    define editor: [user, service] or assignee or editor from project
+
+# ─── BSGateway resources ──────────────────────────────────────────
+
+type rule
+  relations
+    define tenant: [tenant]
+    define editor: [user, service] or admin from tenant
+    define viewer: [user, service] or member from tenant
+
+type apikey
+  relations
+    define tenant: [tenant]
+    define manager: [user, service] or admin from tenant
+    define viewer: [user, service] or admin from tenant
+
+# ─── BSupervisor resources ────────────────────────────────────────
+
+type cost_report
+  relations
+    define tenant: [tenant]
+    define viewer: [user, service] or member from tenant
+    define exporter: [user, service] or admin from tenant
+
+type alert
+  relations
+    define tenant: [tenant]
+    define viewer: [user, service] or member from tenant
+    define editor: [user, service] or admin from tenant
+
+# ─── BSage resources ──────────────────────────────────────────────
+
+type vault
+  relations
+    define tenant: [tenant]
+    define owner: [user]
+    define editor: [user, service] or owner or admin from tenant
+    define viewer: [user, service] or editor or member from tenant
+
+type note
+  relations
+    define vault: [vault]
+    define editor: [user, service] or editor from vault
+    define viewer: [user, service] or viewer from vault

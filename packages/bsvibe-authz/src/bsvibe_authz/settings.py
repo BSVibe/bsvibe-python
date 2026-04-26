@@ -1,0 +1,65 @@
+"""Pydantic-settings configuration for bsvibe-authz.
+
+Phase 0 uses HS256 for both user and service JWTs (shared secret + signing
+secret). Phase 0.4-후속 will introduce JWKS rotation for user JWTs and
+Ed25519 for service tokens — the verifier accepts a `user_jwt_public_key`
+slot in addition to the secret to make that swap mechanical.
+"""
+
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import Literal
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+UserJwtAlgorithm = Literal["HS256", "RS256", "ES256", "EdDSA"]
+
+
+class Settings(BaseSettings):
+    """Configuration loaded from environment variables.
+
+    All `BSVIBE_*` / `OPENFGA_*` / `SERVICE_TOKEN_*` / `USER_JWT_*` env vars
+    map to fields below. The model deliberately accepts ``extra="ignore"`` so
+    products carrying their own settings can coexist.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=None,
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    # BSVibe-Auth
+    bsvibe_auth_url: str
+
+    # OpenFGA
+    openfga_api_url: str
+    openfga_store_id: str
+    openfga_auth_model_id: str
+    openfga_auth_token: str | None = None
+    openfga_request_timeout_s: float = 3.0
+
+    # Service-token verification (matches BSVibe-Auth PR #3 issuance secret).
+    service_token_signing_secret: str
+
+    # User session JWT verification.
+    user_jwt_secret: str | None = None
+    user_jwt_public_key: str | None = None
+    user_jwt_algorithm: UserJwtAlgorithm = "HS256"
+    user_jwt_audience: str = "bsvibe"
+    user_jwt_issuer: str | None = None
+
+    # Permission cache.
+    permission_cache_ttl_s: int = 30
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    """Return the process-wide Settings singleton (cached)."""
+    return Settings()  # type: ignore[call-arg]
+
+
+def reset_settings_cache() -> None:
+    """Drop the cached Settings — used by tests."""
+    get_settings.cache_clear()
