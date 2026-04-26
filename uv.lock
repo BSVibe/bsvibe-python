@@ -4,6 +4,7 @@ requires-python = ">=3.11"
 
 [manifest]
 members = [
+    "bsvibe-alerts",
     "bsvibe-authz",
     "bsvibe-core",
     "bsvibe-fastapi",
@@ -114,6 +115,27 @@ wheels = [
 ]
 
 [[package]]
+name = "bsvibe-alerts"
+version = "0.1.0"
+source = { editable = "packages/bsvibe-alerts" }
+dependencies = [
+    { name = "bsvibe-core" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "structlog" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bsvibe-core", editable = "packages/bsvibe-core" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "pydantic", specifier = ">=2" },
+    { name = "pydantic-settings", specifier = ">=2.5" },
+    { name = "structlog", specifier = ">=24" },
+]
+
+[[package]]
 name = "bsvibe-authz"
 version = "0.0.1"
 source = { editable = "packages/bsvibe-authz" }
@@ -175,6 +197,7 @@ name = "bsvibe-python-workspace"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "bsvibe-alerts" },
     { name = "bsvibe-core" },
     { name = "bsvibe-fastapi" },
     { name = "bsvibe-sqlalchemy" },
@@ -191,6 +214,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "bsvibe-alerts", editable = "packages/bsvibe-alerts" },
     { name = "bsvibe-core", editable = "packages/bsvibe-core" },
     { name = "bsvibe-fastapi", editable = "packages/bsvibe-fastapi" },
     { name = "bsvibe-sqlalchemy", editable = "packages/bsvibe-sqlalchemy" },
