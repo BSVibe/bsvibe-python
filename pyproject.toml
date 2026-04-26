@@ -4,10 +4,12 @@ version = "0.1.0"
 description = "BSVibe shared Python libraries"
 requires-python = ">=3.11"
 dependencies = [
+    "bsvibe-alerts",
     "bsvibe-core",
 ]
 
 [tool.uv.sources]
+bsvibe-alerts = { workspace = true }
 bsvibe-core = { workspace = true }
 
 [tool.uv.workspace]
@@ -29,3 +31,4 @@ target-version = "py311"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["packages"]
+addopts = "--import-mode=importlib"
