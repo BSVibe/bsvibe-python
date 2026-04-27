@@ -59,6 +59,7 @@ Typical wiring inside a FastAPI service::
 
 from __future__ import annotations
 
+from bsvibe_audit.alerts import AlertRuleEngine, AuditAlertRule, default_rules
 from bsvibe_audit.client import AuditClient, AuditDeliveryError, AuditDeliveryResult
 from bsvibe_audit.decorators import audit_emit
 from bsvibe_audit.emitter import AuditEmitter
@@ -101,5 +102,9 @@ __all__ = [
     "AuditDeliveryResult",
     # Decorator
     "audit_emit",
+    # Alert rule engine
+    "AlertRuleEngine",
+    "AuditAlertRule",
+    "default_rules",
     "__version__",
 ]

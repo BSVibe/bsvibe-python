@@ -28,6 +28,7 @@ from bsvibe_audit.client import AuditClient, AuditDeliveryError
 from bsvibe_audit.outbox.store import OutboxStore
 
 if TYPE_CHECKING:
+    from bsvibe_audit.alerts import AlertRuleEngine
     from bsvibe_audit.settings import AuditSettings
 
 
@@ -44,6 +45,7 @@ class OutboxRelay:
         interval_s: float = 5.0,
         max_retries: int = 5,
         enabled: bool = True,
+        alert_engine: AlertRuleEngine | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._client = client
@@ -52,6 +54,7 @@ class OutboxRelay:
         self._interval_s = interval_s
         self._max_retries = max_retries
         self._enabled = enabled and session_factory is not None and client is not None
+        self._alert_engine = alert_engine
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
         self._logger = structlog.get_logger("bsvibe_audit.outbox.relay")
@@ -63,6 +66,7 @@ class OutboxRelay:
         *,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         client: AuditClient | None = None,
+        alert_engine: AlertRuleEngine | None = None,
     ) -> OutboxRelay:
         if not settings.relay_enabled:
             return cls(
@@ -82,6 +86,7 @@ class OutboxRelay:
             interval_s=settings.relay_interval_s,
             max_retries=settings.max_retries,
             enabled=session_factory is not None,
+            alert_engine=alert_engine,
         )
 
     def is_running(self) -> bool:
@@ -155,6 +160,21 @@ class OutboxRelay:
             await self._store.mark_delivered(session, ids)
             await session.commit()
             self._logger.debug("audit_batch_delivered", rows=len(rows))
+
+            # Best-effort fan-out to the alert rule engine. Alert
+            # delivery problems must NEVER break the audit relay loop —
+            # operators can drop the engine via env config and the
+            # outbox keeps shipping.
+            if self._alert_engine is not None:
+                try:
+                    await self._alert_engine.evaluate(payloads)
+                except Exception as exc:  # noqa: BLE001 — failure isolation
+                    self._logger.warning(
+                        "audit_alert_engine_failed",
+                        rows=len(rows),
+                        error=repr(exc),
+                    )
+
             return len(rows)
 
     async def _run_loop(self) -> None:
