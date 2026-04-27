@@ -9,6 +9,7 @@ dependencies = [
     "bsvibe-authz",
     "bsvibe-core",
     "bsvibe-fastapi",
+    "bsvibe-llm",
     "bsvibe-sqlalchemy",
 ]
 
@@ -18,6 +19,7 @@ bsvibe-audit = { workspace = true }
 bsvibe-authz = { workspace = true }
 bsvibe-core = { workspace = true }
 bsvibe-fastapi = { workspace = true }
+bsvibe-llm = { workspace = true }
 bsvibe-sqlalchemy = { workspace = true }
 
 [tool.uv.workspace]
