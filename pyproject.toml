@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "BSVibe shared Python libraries"
 requires-python = ">=3.11"
 dependencies = [
+    "bsvibe-alerts",
     "bsvibe-authz",
     "bsvibe-core",
     "bsvibe-fastapi",
@@ -12,6 +13,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
+bsvibe-alerts = { workspace = true }
 bsvibe-authz = { workspace = true }
 bsvibe-core = { workspace = true }
 bsvibe-fastapi = { workspace = true }
