@@ -5,10 +5,12 @@ description = "BSVibe shared Python libraries"
 requires-python = ">=3.11"
 dependencies = [
     "bsvibe-authz",
+    "bsvibe-core",
 ]
 
 [tool.uv.sources]
 bsvibe-authz = { workspace = true }
+bsvibe-core = { workspace = true }
 
 [tool.uv.workspace]
 members = ["packages/*"]
