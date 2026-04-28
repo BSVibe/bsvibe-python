@@ -1,13 +1,15 @@
 [project]
 name = "bsvibe-authz"
-version = "0.0.1"
-description = "BSVibe shared authorization library"
+version = "0.1.0"
+description = "BSVibe shared authorization library — JWT verification, OpenFGA client, FastAPI deps"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2",
+    "pydantic-settings>=2.0.0",
     "httpx>=0.27",
     "fastapi>=0.110",
     "structlog>=24",
+    "pyjwt[crypto]>=2.9",
 ]
 
 [build-system]
@@ -16,3 +18,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/bsvibe_authz"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"schema/bsvibe.fga" = "bsvibe_authz/schema/bsvibe.fga"

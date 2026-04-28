@@ -3,10 +3,44 @@ name = "bsvibe-python-workspace"
 version = "0.1.0"
 description = "BSVibe shared Python libraries"
 requires-python = ">=3.11"
+dependencies = [
+    "bsvibe-alerts",
+    "bsvibe-audit",
+    "bsvibe-authz",
+    "bsvibe-core",
+    "bsvibe-fastapi",
+    "bsvibe-llm",
+    "bsvibe-sqlalchemy",
+]
+
+[tool.uv.sources]
+bsvibe-alerts = { workspace = true }
+bsvibe-audit = { workspace = true }
+bsvibe-authz = { workspace = true }
+bsvibe-core = { workspace = true }
+bsvibe-fastapi = { workspace = true }
+bsvibe-llm = { workspace = true }
+bsvibe-sqlalchemy = { workspace = true }
 
 [tool.uv.workspace]
 members = ["packages/*"]
 
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5",
+    "httpx>=0.27",
+    "pyjwt[crypto]>=2.9",
+    "respx>=0.21",
+]
+
 [tool.ruff]
 line-length = 120
 target-version = "py311"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["packages"]
+addopts = "--import-mode=importlib"
