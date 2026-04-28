@@ -7,12 +7,14 @@ dependencies = [
     "bsvibe-authz",
     "bsvibe-core",
     "bsvibe-fastapi",
+    "bsvibe-sqlalchemy",
 ]
 
 [tool.uv.sources]
 bsvibe-authz = { workspace = true }
 bsvibe-core = { workspace = true }
 bsvibe-fastapi = { workspace = true }
+bsvibe-sqlalchemy = { workspace = true }
 
 [tool.uv.workspace]
 members = ["packages/*"]
