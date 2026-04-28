@@ -61,7 +61,12 @@ from __future__ import annotations
 
 from bsvibe_audit.alerts import AlertRuleEngine, AuditAlertRule, default_rules
 from bsvibe_audit.client import AuditClient, AuditDeliveryError, AuditDeliveryResult
-from bsvibe_audit.decorators import audit_emit
+from bsvibe_audit.decorators import (
+    ActorFactory,
+    DataExtractor,
+    OutboxProtocol,
+    audit_emit,
+)
 from bsvibe_audit.emitter import AuditEmitter
 from bsvibe_audit.events import (
     EVENT_REGISTRY,
@@ -102,6 +107,9 @@ __all__ = [
     "AuditDeliveryResult",
     # Decorator
     "audit_emit",
+    "ActorFactory",
+    "DataExtractor",
+    "OutboxProtocol",
     # Alert rule engine
     "AlertRuleEngine",
     "AuditAlertRule",
