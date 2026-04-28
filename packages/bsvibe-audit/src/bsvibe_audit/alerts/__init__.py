@@ -18,12 +18,20 @@ Public surface:
 
 from __future__ import annotations
 
-from bsvibe_audit.alerts.engine import AlertRuleEngine
+from bsvibe_audit.alerts.engine import (
+    AlertRuleEngine,
+    CentralAlertRuleEngine,
+    DispatchMode,
+    resolve_dispatch_mode,
+)
 from bsvibe_audit.alerts.presets import default_rules
 from bsvibe_audit.alerts.rules import AuditAlertRule
 
 __all__ = [
     "AlertRuleEngine",
     "AuditAlertRule",
+    "CentralAlertRuleEngine",
+    "DispatchMode",
     "default_rules",
+    "resolve_dispatch_mode",
 ]
