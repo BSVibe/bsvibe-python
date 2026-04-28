@@ -47,7 +47,13 @@ from bsvibe_alerts.channels import (
     TelegramChannel,
 )
 from bsvibe_alerts.client import AlertClient
-from bsvibe_alerts.routing import AlertRouter
+from bsvibe_alerts.dispatch_client import (
+    CentralDispatchClient,
+    CentralDispatchError,
+    DeliveryDescriptor,
+    DispatchResult,
+)
+from bsvibe_alerts.routing import AlertRouter, CentralAlertRouter
 from bsvibe_alerts.settings import AlertSettings
 from bsvibe_alerts.types import Alert, AlertSeverity
 
@@ -60,6 +66,11 @@ __all__ = [
     "AlertClient",
     "AlertRouter",
     "AlertChannel",
+    "CentralAlertRouter",
+    "CentralDispatchClient",
+    "CentralDispatchError",
+    "DeliveryDescriptor",
+    "DispatchResult",
     "StructlogChannel",
     "TelegramChannel",
     "SlackChannel",
