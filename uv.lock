@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 members = [
     "bsvibe-authz",
     "bsvibe-core",
+    "bsvibe-fastapi",
     "bsvibe-python-workspace",
 ]
 
@@ -77,11 +78,33 @@ requires-dist = [
 ]
 
 [[package]]
+name = "bsvibe-fastapi"
+version = "0.1.0"
+source = { editable = "packages/bsvibe-fastapi" }
+dependencies = [
+    { name = "bsvibe-core" },
+    { name = "fastapi" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "structlog" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bsvibe-core", editable = "packages/bsvibe-core" },
+    { name = "fastapi", specifier = ">=0.110" },
+    { name = "pydantic", specifier = ">=2" },
+    { name = "pydantic-settings", specifier = ">=2.5" },
+    { name = "structlog", specifier = ">=24" },
+]
+
+[[package]]
 name = "bsvibe-python-workspace"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "bsvibe-core" },
+    { name = "bsvibe-fastapi" },
 ]
 
 [package.dev-dependencies]
@@ -94,7 +117,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "bsvibe-core", editable = "packages/bsvibe-core" }]
+requires-dist = [
+    { name = "bsvibe-core", editable = "packages/bsvibe-core" },
+    { name = "bsvibe-fastapi", editable = "packages/bsvibe-fastapi" },
+]
 
 [package.metadata.requires-dev]
 dev = [

@@ -6,11 +6,13 @@ requires-python = ">=3.11"
 dependencies = [
     "bsvibe-authz",
     "bsvibe-core",
+    "bsvibe-fastapi",
 ]
 
 [tool.uv.sources]
 bsvibe-authz = { workspace = true }
 bsvibe-core = { workspace = true }
+bsvibe-fastapi = { workspace = true }
 
 [tool.uv.workspace]
 members = ["packages/*"]
@@ -33,3 +35,4 @@ target-version = "py311"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["packages"]
+addopts = "--import-mode=importlib"
