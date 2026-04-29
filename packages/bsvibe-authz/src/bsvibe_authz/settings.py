@@ -42,6 +42,7 @@ class Settings(BaseSettings):
 
     # Service-token verification (matches BSVibe-Auth PR #3 issuance secret).
     service_token_signing_secret: str
+    service_token_issuer: str | None = None
 
     # User session JWT verification.
     user_jwt_secret: str | None = None

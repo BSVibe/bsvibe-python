@@ -97,6 +97,47 @@ async def test_verify_service_jwt_passes_for_valid_payload(auth_settings, make_s
     assert payload.token_type == "service"
 
 
+async def test_verify_service_jwt_uses_service_token_issuer(
+    user_jwt_secret: str,
+    service_signing_secret: str,
+    now: int,
+) -> None:
+    from bsvibe_authz.auth import verify_service_jwt
+    from bsvibe_authz.settings import Settings
+
+    settings = Settings(  # type: ignore[call-arg]
+        bsvibe_auth_url="http://auth-app:5179",
+        openfga_api_url="http://openfga.local:8080",
+        openfga_store_id="store-1",
+        openfga_auth_model_id="model-1",
+        service_token_signing_secret=service_signing_secret,
+        service_token_issuer="http://auth-app:5179",
+        user_jwt_secret=user_jwt_secret,
+        user_jwt_algorithm="HS256",
+        user_jwt_audience="bsvibe",
+        user_jwt_issuer="http://localhost:54321/auth/v1",
+    )
+    token = jwt.encode(
+        {
+            "iss": "http://auth-app:5179",
+            "sub": "user:u-1",
+            "aud": "bsupervisor",
+            "scope": "bsupervisor.events",
+            "iat": now,
+            "exp": now + 60,
+            "token_type": "service",
+            "tenant_id": "t-1",
+        },
+        service_signing_secret,
+        algorithm="HS256",
+    )
+
+    payload = verify_service_jwt(token, settings, expected_audience="bsupervisor")
+
+    assert payload.aud == "bsupervisor"
+    assert payload.has_scope("bsupervisor.events")
+
+
 async def test_verify_service_jwt_rejects_wrong_audience(auth_settings, make_service_jwt) -> None:
     from bsvibe_authz.auth import AuthError, verify_service_jwt
 

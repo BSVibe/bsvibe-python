@@ -84,7 +84,7 @@ def verify_service_jwt(
             settings.service_token_signing_secret,
             algorithms=["HS256"],
             audience=expected_audience,
-            issuer=settings.user_jwt_issuer or settings.bsvibe_auth_url,
+            issuer=settings.service_token_issuer or settings.bsvibe_auth_url,
             options={"require": ["exp", "iat", "sub", "aud"]},
         )
     except jwt.PyJWTError as exc:
