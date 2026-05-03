@@ -6,14 +6,23 @@ model
 # Source: BSVibe_Auth_Design.md §3 (option C — RBAC + relation + caveat).
 #
 # This file is the canonical schema for production deployments. The copy
-# under `_infra/openfga/bsvibe.fga` is a P0.3 bootstrap seed; from P0.4
-# onwards changes happen here and the _infra copy is updated by follow-up.
+# under ``BSVibe-Auth/infra/openfga/bsvibe.fga`` is byte-identical and
+# kept in sync by review (drift-guard CI step).
 #
 # Conventions
 #   - Permission identifiers follow `<product>.<resource>.<action>` (Auth_Design §2.5).
 #   - 4 fixed roles per Auth_Design §2.3 (owner / admin / member / viewer).
 #   - 4 fixed plans per Auth_Design §2.4 (free / pro / team / enterprise).
 #   - Hierarchy: owner ⊃ admin ⊃ member ⊃ viewer (encoded as `or` unions).
+#
+# Action mapping (2026-05-03 prod hardening) — every resource type
+# defines ``read``, ``write``, ``delete`` relations so ``bsvibe_authz``'s
+# permission identifier ``<product>.<resource>.<action>`` resolves
+# directly to an OpenFGA relation. The action relation is a thin alias
+# over the role hierarchy:
+#   read   = viewer
+#   write  = editor (or admin if no editor relation exists)
+#   delete = owner / admin / editor depending on resource semantics
 
 # ─── Identity types ───────────────────────────────────────────────
 
@@ -30,15 +39,24 @@ type system
     define admin: [user]
     define audit_reader: [user] or admin
     define support: [user] or admin
+    # Action aliases
+    define read: audit_reader
+    define write: admin
+    define delete: admin
 
 # ─── Subscription plan ────────────────────────────────────────────
 #
 # Plan objects are seeded at bootstrap: plan:free, plan:pro, plan:team,
 # plan:enterprise. Each tenant has exactly one `plan` relation.
+#
+# Plans are platform-managed; tenants can ``read`` (to discover their
+# subscription) but never write/delete via the per-tenant API.
 
 type plan
   relations
     define subscriber: [tenant]
+    # Action aliases — every subscriber (= tenant member) can read.
+    define read: subscriber
 
 # ─── Tenant ───────────────────────────────────────────────────────
 
@@ -49,11 +67,16 @@ type tenant
     define member: [user, service] or admin
     define viewer: [user, service] or member
     define plan: [plan]
+    # Action aliases
+    define read: viewer
+    define write: admin
+    define create: admin
+    define delete: owner
 
 # ─── Feature gating (caveat-based) ────────────────────────────────
 #
 # Each feature object resolves enabled_for via its tenant's plan.
-# Example seeds (set with `fga tuple write`):
+# Example seeds (set with ``fga tuple write``):
 #   feature:agent_execute   plan:pro / plan:team / plan:enterprise
 #   feature:multi_tenant_admin   plan:team / plan:enterprise
 #   feature:audit_log   plan:enterprise
@@ -61,6 +84,8 @@ type tenant
 type feature
   relations
     define enabled_for: [plan]
+    # Read access flows through the plan-membership chain.
+    define read: enabled_for
 
 # ─── BSNexus resources ────────────────────────────────────────────
 
@@ -70,6 +95,10 @@ type project
     define owner: [user]
     define editor: [user, service] or owner or admin from tenant
     define viewer: [user, service] or editor or member from tenant
+    # Action aliases
+    define read: viewer
+    define write: editor
+    define delete: owner
 
 type task
   relations
@@ -77,6 +106,11 @@ type task
     define assignee: [user]
     define viewer: [user, service] or assignee or viewer from project
     define editor: [user, service] or assignee or editor from project
+    # Action aliases — task lifecycle (delete = editor; assignees may
+    # delete their own task).
+    define read: viewer
+    define write: editor
+    define delete: editor
 
 # ─── BSGateway resources ──────────────────────────────────────────
 
@@ -85,12 +119,20 @@ type rule
     define tenant: [tenant]
     define editor: [user, service] or admin from tenant
     define viewer: [user, service] or member from tenant
+    # Action aliases
+    define read: viewer
+    define write: editor
+    define delete: editor
 
 type apikey
   relations
     define tenant: [tenant]
     define manager: [user, service] or admin from tenant
     define viewer: [user, service] or admin from tenant
+    # Action aliases
+    define read: viewer
+    define write: manager
+    define delete: manager
 
 # ─── BSupervisor resources ────────────────────────────────────────
 
@@ -99,12 +141,20 @@ type cost_report
     define tenant: [tenant]
     define viewer: [user, service] or member from tenant
     define exporter: [user, service] or admin from tenant
+    # Action aliases — exports are write-class operations.
+    define read: viewer
+    define write: exporter
+    define delete: exporter
 
 type alert
   relations
     define tenant: [tenant]
     define viewer: [user, service] or member from tenant
     define editor: [user, service] or admin from tenant
+    # Action aliases
+    define read: viewer
+    define write: editor
+    define delete: editor
 
 # ─── BSage resources ──────────────────────────────────────────────
 
@@ -114,9 +164,17 @@ type vault
     define owner: [user]
     define editor: [user, service] or owner or admin from tenant
     define viewer: [user, service] or editor or member from tenant
+    # Action aliases
+    define read: viewer
+    define write: editor
+    define delete: owner
 
 type note
   relations
     define vault: [vault]
     define editor: [user, service] or editor from vault
     define viewer: [user, service] or viewer from vault
+    # Action aliases
+    define read: viewer
+    define write: editor
+    define delete: editor
