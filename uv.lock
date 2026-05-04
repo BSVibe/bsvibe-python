@@ -299,7 +299,7 @@ requires-dist = [
 
 [[package]]
 name = "bsvibe-authz"
-version = "0.1.0"
+version = "0.7.0"
 source = { editable = "packages/bsvibe-authz" }
 dependencies = [
     { name = "fastapi" },
