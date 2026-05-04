@@ -14,6 +14,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 ServiceAudience = Literal["bsage", "bsgateway", "bsupervisor", "bsnexus"]
+SERVICE_AUDIENCES: frozenset[str] = frozenset(("bsage", "bsgateway", "bsupervisor", "bsnexus"))
 TenantRole = Literal["owner", "admin", "member", "viewer"]
 TenantPlan = Literal["free", "pro", "team", "enterprise"]
 TenantType = Literal["personal", "org"]

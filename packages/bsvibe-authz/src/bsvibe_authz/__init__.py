@@ -37,8 +37,10 @@ from .deps import (
     require_permission,
     reset_singletons,
 )
+from .service_token_minter import ServiceTokenMinter, ServiceTokenMinterError
 from .settings import Settings, get_settings, reset_settings_cache
 from .types import (
+    SERVICE_AUDIENCES,
     Permission,
     ServiceAudience,
     ServiceTokenPayload,
@@ -49,7 +51,7 @@ from .types import (
     User,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.7.0"
 
 __all__ = [
     "AuthError",
@@ -60,9 +62,12 @@ __all__ = [
     "OpenFGAError",
     "Permission",
     "PermissionCache",
+    "SERVICE_AUDIENCES",
     "ServiceAudience",
     "ServiceKey",
     "ServiceKeyAuth",
+    "ServiceTokenMinter",
+    "ServiceTokenMinterError",
     "ServiceTokenPayload",
     "Settings",
     "TenantMembership",

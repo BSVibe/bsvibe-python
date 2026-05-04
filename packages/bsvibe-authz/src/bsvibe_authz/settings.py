@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     service_token_signing_secret: str
     service_token_issuer: str | None = None
 
+    # OAuth2 client_credentials grant (BSVibe-Auth PR #7). One row per
+    # backend in `oauth_clients`. Optional so verifier-only services
+    # (e.g. BSSupervisor receiver side) need not configure them.
+    bsvibe_client_id: str | None = None
+    bsvibe_client_secret: str | None = None
+
     # User session JWT verification.
     user_jwt_secret: str | None = None
     user_jwt_public_key: str | None = None
