@@ -26,6 +26,14 @@ from typing import Any
 import litellm
 import structlog
 
+from bsvibe_llm._ollama_probe import chat_direct as _ollama_chat_direct
+from bsvibe_llm._ollama_probe import is_reasoning_model as _ollama_is_reasoning
+from bsvibe_llm._reasoning import (
+    SuppressionStrategy,
+    apply_to_kwargs,
+    decide_strategy,
+    is_ollama_model,
+)
 from bsvibe_llm.fallback import FallbackChain
 from bsvibe_llm.metadata import RunAuditMetadata
 from bsvibe_llm.retry import RetryPolicy
@@ -77,6 +85,7 @@ class LlmClient:
         temperature: float | None = None,
         tools: list[dict[str, Any]] | None = None,
         extra: dict[str, Any] | None = None,
+        suppress_reasoning: bool = False,
     ) -> CompletionResult:
         """Run one completion through LiteLLM.
 
@@ -89,6 +98,12 @@ class LlmClient:
             timeout_s: Per-attempt timeout (passed straight to litellm).
             max_tokens / temperature / tools / extra: forwarded to
                 ``litellm.acompletion``.
+            suppress_reasoning: When True, disable chain-of-thought for
+                reasoning-capable providers (Anthropic extended thinking,
+                OpenAI o-series, Ollama reasoning models, mlx-lm/vllm).
+                Compile-time call sites that want short structured output
+                should set this. See ``_reasoning.SuppressionStrategy``
+                for per-provider behaviour.
         """
         if metadata is None:
             raise ValueError("LlmClient.complete() requires a RunAuditMetadata instance")
@@ -118,14 +133,54 @@ class LlmClient:
                     tools=tools,
                     extra=extra,
                 )
+
+                strategy = SuppressionStrategy.NONE
+                if suppress_reasoning:
+                    api_base = kwargs.get("api_base") or ""
+                    ollama_reasoning = False
+                    if is_ollama_model(resolved_model):
+                        ollama_reasoning = await _ollama_is_reasoning(resolved_model, api_base=api_base)
+                    strategy = decide_strategy(
+                        resolved_model,
+                        api_base=api_base,
+                        has_tools=bool(tools),
+                        ollama_is_reasoning=ollama_reasoning,
+                    )
+                    if (
+                        strategy is SuppressionStrategy.NONE
+                        and is_ollama_model(resolved_model)
+                        and ollama_reasoning
+                        and tools
+                    ):
+                        # Reasoning ollama + tool calls: bypass path
+                        # doesn't implement tool calling. Stay on litellm
+                        # and warn — ollama will ignore think kwarg.
+                        logger.warning(
+                            "ollama_reasoning_with_tools_no_bypass",
+                            model=resolved_model,
+                        )
+
                 logger.debug(
                     "llm_call_start",
                     model=resolved_model,
                     direct=direct,
                     tenant_id=metadata.tenant_id,
                     run_id=metadata.run_id,
+                    suppress_strategy=strategy.value,
                 )
-                response = await litellm.acompletion(**kwargs)
+
+                if strategy is SuppressionStrategy.OLLAMA_BYPASS:
+                    response = await _ollama_chat_direct(
+                        model=resolved_model,
+                        messages=messages,
+                        api_base=kwargs.get("api_base") or "",
+                        body={"think": False},
+                        timeout_s=timeout_s or 120.0,
+                    )
+                else:
+                    apply_to_kwargs(strategy, kwargs)
+                    response = await litellm.acompletion(**kwargs)
+
                 return _normalise(response, model=resolved_model)
 
             return await self._retry.call(attempt)

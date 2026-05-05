@@ -108,6 +108,32 @@ settings = LlmSettings(
 - `CircuitBreaker` is provided as a primitive so each product can wire
   its own per-vendor breaker on top.
 
+## Reasoning suppression
+
+Compile-time call sites that want short structured output and no
+chain-of-thought set `suppress_reasoning=True`:
+
+```python
+result = await client.complete(
+    messages=[{"role": "user", "content": "..."}],
+    metadata=RunAuditMetadata(...),
+    suppress_reasoning=True,
+)
+```
+
+Per-provider behaviour (auto-detected from the model string / api_base):
+
+| Provider | Effect |
+|---|---|
+| Anthropic Claude Opus 4.x / Sonnet 4.6+ | Adds `thinking={"type": "disabled"}` |
+| OpenAI o1 / o3 / o4 / gpt-5-thinking | Adds `reasoning_effort="minimal"` |
+| Ollama reasoning models (glm-4.7, qwen3-thinking, deepseek-r1) | **Bypasses litellm** (which silently drops `think`), POSTs `/api/chat` directly with `think: false`. Probes `/api/show` once per model + family-name fallback. Tool calls force fallback to litellm. |
+| mlx-lm / vllm (OpenAI-compat self-hosted, detected via api_base) | Adds `extra_body={"think": false, "reasoning_effort": "minimal"}` |
+| Non-reasoning models (gpt-4o, sonnet-3.5, haiku, llama3) | No-op |
+
+`suppress_reasoning=False` (default) preserves existing behaviour for
+all callers.
+
 ## Migration cheatsheet
 
 | Today (per-product) | After Phase A |
@@ -123,7 +149,7 @@ settings = LlmSettings(
 # product pyproject.toml
 [project]
 dependencies = [
-    "bsvibe-llm @ git+https://github.com/BSVibe/bsvibe-python.git@v0.1.0#subdirectory=packages/bsvibe-llm",
+    "bsvibe-llm @ git+https://github.com/BSVibe/bsvibe-python.git@v0.2.0#subdirectory=packages/bsvibe-llm",
 ]
 ```
 
