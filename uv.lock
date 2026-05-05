@@ -8,6 +8,7 @@ members = [
     "bsvibe-audit",
     "bsvibe-authz",
     "bsvibe-core",
+    "bsvibe-demo",
     "bsvibe-fastapi",
     "bsvibe-llm",
     "bsvibe-python-workspace",
@@ -338,6 +339,30 @@ requires-dist = [
 ]
 
 [[package]]
+name = "bsvibe-demo"
+version = "0.1.0"
+source = { editable = "packages/bsvibe-demo" }
+dependencies = [
+    { name = "asyncpg" },
+    { name = "pyjwt" },
+    { name = "structlog" },
+]
+
+[package.optional-dependencies]
+sqlalchemy = [
+    { name = "sqlalchemy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "asyncpg", specifier = ">=0.29" },
+    { name = "pyjwt", specifier = ">=2.8" },
+    { name = "sqlalchemy", marker = "extra == 'sqlalchemy'", specifier = ">=2.0" },
+    { name = "structlog", specifier = ">=24" },
+]
+provides-extras = ["sqlalchemy"]
+
+[[package]]
 name = "bsvibe-fastapi"
 version = "0.1.0"
 source = { editable = "packages/bsvibe-fastapi" }
@@ -390,6 +415,7 @@ dependencies = [
     { name = "bsvibe-audit" },
     { name = "bsvibe-authz" },
     { name = "bsvibe-core" },
+    { name = "bsvibe-demo" },
     { name = "bsvibe-fastapi" },
     { name = "bsvibe-llm" },
     { name = "bsvibe-sqlalchemy" },
@@ -412,6 +438,7 @@ requires-dist = [
     { name = "bsvibe-audit", editable = "packages/bsvibe-audit" },
     { name = "bsvibe-authz", editable = "packages/bsvibe-authz" },
     { name = "bsvibe-core", editable = "packages/bsvibe-core" },
+    { name = "bsvibe-demo", editable = "packages/bsvibe-demo" },
     { name = "bsvibe-fastapi", editable = "packages/bsvibe-fastapi" },
     { name = "bsvibe-llm", editable = "packages/bsvibe-llm" },
     { name = "bsvibe-sqlalchemy", editable = "packages/bsvibe-sqlalchemy" },
