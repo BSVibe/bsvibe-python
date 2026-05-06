@@ -66,6 +66,9 @@ class User(BaseModel):
     active_tenant_id: str | None = None
     tenants: list[TenantMembership] = Field(default_factory=list)
     is_service: bool = False
+    # Demo-mode session: token is signed by demo_jwt_secret (not the
+    # prod user_jwt_secret), permissions short-circuit to allow.
+    is_demo: bool = False
 
     def role_in(self, tenant_id: str) -> TenantRole | None:
         for t in self.tenants:

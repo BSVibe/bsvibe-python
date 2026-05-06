@@ -57,6 +57,13 @@ class Settings(BaseSettings):
     user_jwt_audience: str = "bsvibe"
     user_jwt_issuer: str | None = None
 
+    # Demo session JWT — separate issuer (HS256, DEMO_JWT_SECRET). When
+    # configured, tokens carrying ``is_demo: true`` are verified against
+    # this secret and resolve to a User with ``is_demo=True``. Permission
+    # checks short-circuit to allow for demo principals so the demo
+    # backends don't need OpenFGA + a synthetic user graph.
+    demo_jwt_secret: str | None = None
+
     # Permission cache.
     permission_cache_ttl_s: int = 30
 

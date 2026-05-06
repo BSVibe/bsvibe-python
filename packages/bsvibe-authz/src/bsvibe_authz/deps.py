@@ -23,6 +23,8 @@ from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.security.utils import get_authorization_scheme_param
 
+import jwt as _jwt
+
 from .auth import AuthError, parse_user_token, verify_service_jwt, verify_user_jwt
 from .cache import PermissionCache
 from .client import OpenFGAClient
@@ -99,11 +101,55 @@ def _extract_bearer(authorization: str | None) -> str:
 # ---------------------------------------------------------------------------
 # CurrentUser
 # ---------------------------------------------------------------------------
+def _try_demo_user(token: str, settings: Settings) -> User | None:
+    """If ``token`` carries ``is_demo: true`` and a ``demo_jwt_secret`` is
+    configured, verify against it and return a synthetic demo User.
+    Returns None when the token is not a demo token, or demo mode is not
+    enabled. Lets the prod auth path keep handling everything else.
+    """
+    if not settings.demo_jwt_secret:
+        return None
+    # Peek at the unverified payload to check the is_demo flag — avoids a
+    # spurious signature check on every prod request.
+    try:
+        peek = _jwt.decode(token, options={"verify_signature": False})
+    except _jwt.PyJWTError:
+        return None
+    if peek.get("is_demo") is not True:
+        return None
+    try:
+        payload = _jwt.decode(
+            token,
+            settings.demo_jwt_secret,
+            algorithms=["HS256"],
+            options={"require": ["exp", "iat"]},
+        )
+    except _jwt.PyJWTError:
+        return None
+    tenant_id = payload.get("tenant_id")
+    if not tenant_id:
+        return None
+    return User(
+        id=f"demo-{tenant_id}",
+        email="demo@bsvibe.dev",
+        active_tenant_id=str(tenant_id),
+        tenants=[],
+        is_service=False,
+        is_demo=True,
+    )
+
+
 async def get_current_user(
     authorization: str | None = Header(default=None),
     settings: Settings = Depends(get_settings_dep),
 ) -> User:
     token = _extract_bearer(authorization)
+    # Demo bypass — accept tokens issued by the demo backend's JWT secret
+    # (separate from prod user_jwt_secret) so demo deployments do not need
+    # a real OpenFGA model + synthetic user graph.
+    demo_user = _try_demo_user(token, settings)
+    if demo_user is not None:
+        return demo_user
     try:
         payload = verify_user_jwt(token, settings)
     except AuthError as exc:
@@ -168,6 +214,11 @@ def require_permission(
         cache: PermissionCache = Depends(get_permission_cache),
         fga: FGAClientProtocol = Depends(get_openfga_client),
     ) -> None:
+        # Demo sessions bypass OpenFGA — the demo backend has no user
+        # graph and every demo principal is scoped to a single ephemeral
+        # tenant whose data is, by design, public sandbox data.
+        if user.is_demo:
+            return
         principal = user.id if user.is_service else f"user:{user.id}"
 
         # Resolve object identifier.
