@@ -15,7 +15,9 @@ Stable imports for product CLIs:
 
 from __future__ import annotations
 
+from bsvibe_cli_base.cli import CliContext, cli_app
 from bsvibe_cli_base.config import CliConfig, Profile
+from bsvibe_cli_base.output import FORMATS, OutputFormatter
 from bsvibe_cli_base.profile import (
     ProfileExistsError,
     ProfileNotFoundError,
@@ -30,5 +32,9 @@ __all__ = [
     "ProfileStore",
     "ProfileNotFoundError",
     "ProfileExistsError",
+    "OutputFormatter",
+    "FORMATS",
+    "CliContext",
+    "cli_app",
     "__version__",
 ]
