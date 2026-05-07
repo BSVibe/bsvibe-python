@@ -69,6 +69,7 @@ class User(BaseModel):
     # Demo-mode session: token is signed by demo_jwt_secret (not the
     # prod user_jwt_secret), permissions short-circuit to allow.
     is_demo: bool = False
+    scope: list[str] = Field(default_factory=list)
 
     def role_in(self, tenant_id: str) -> TenantRole | None:
         for t in self.tenants:
@@ -78,6 +79,25 @@ class User(BaseModel):
 
     def has_tenant(self, tenant_id: str) -> bool:
         return any(t.id == tenant_id for t in self.tenants)
+
+
+class IntrospectionResponse(BaseModel):
+    """RFC 7662 Token Introspection response.
+
+    An inactive token MAY consist solely of ``{"active": false}`` per §2.2,
+    so all other fields are optional.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    active: bool
+    sub: str | None = None
+    tenant: str | None = None
+    aud: list[str] | None = None
+    scope: list[str] | None = None
+    exp: int | None = None
+    client_id: str | None = None
+    username: str | None = None
 
 
 class ServiceTokenPayload(BaseModel):

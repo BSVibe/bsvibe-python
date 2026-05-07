@@ -25,11 +25,22 @@ from fastapi.security.utils import get_authorization_scheme_param
 
 import jwt as _jwt
 
-from .auth import AuthError, parse_user_token, verify_service_jwt, verify_user_jwt
-from .cache import PermissionCache
+from .auth import (
+    AuthError,
+    parse_user_token,
+    verify_bootstrap_token,
+    verify_opaque_token,
+    verify_service_jwt,
+    verify_user_jwt,
+)
+from .cache import IntrospectionCache, PermissionCache
 from .client import OpenFGAClient
+from .introspection import IntrospectionClient
 from .settings import Settings, get_settings
 from .types import ServiceAudience, ServiceTokenPayload, User
+
+BOOTSTRAP_TOKEN_PREFIX = "bsv_admin_"
+OPAQUE_TOKEN_PREFIX = "bsv_sk_"
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -53,6 +64,8 @@ def get_settings_dep() -> Settings:
 
 _fga_client_singleton: OpenFGAClient | None = None
 _cache_singleton: PermissionCache | None = None
+_introspection_client_singleton: IntrospectionClient | None = None
+_introspection_cache_singleton: IntrospectionCache | None = None
 
 
 def get_openfga_client(settings: Settings = Depends(get_settings_dep)) -> FGAClientProtocol:
@@ -73,11 +86,46 @@ def get_permission_cache(
     return _cache_singleton
 
 
+def get_introspection_client(
+    settings: Settings = Depends(get_settings_dep),
+) -> IntrospectionClient | None:
+    """Process-wide RFC 7662 introspection client (lazy init).
+
+    Returns ``None`` when ``introspection_url`` is unconfigured so callers can
+    fall through to the JWT path.
+    """
+    global _introspection_client_singleton
+    if _introspection_client_singleton is None:
+        if not settings.introspection_url:
+            return None
+        _introspection_client_singleton = IntrospectionClient(
+            introspection_url=settings.introspection_url,
+            client_id=settings.introspection_client_id,
+            client_secret=settings.introspection_client_secret,
+        )
+    return _introspection_client_singleton
+
+
+def get_introspection_cache(
+    settings: Settings = Depends(get_settings_dep),
+) -> IntrospectionCache:
+    """Process-wide introspection-response cache (lazy init)."""
+    global _introspection_cache_singleton
+    if _introspection_cache_singleton is None:
+        _introspection_cache_singleton = IntrospectionCache(
+            ttl_s=settings.permission_cache_ttl_s,
+        )
+    return _introspection_cache_singleton
+
+
 def reset_singletons() -> None:
     """Used by tests — reset the process-wide client/cache."""
     global _fga_client_singleton, _cache_singleton
+    global _introspection_client_singleton, _introspection_cache_singleton
     _fga_client_singleton = None
     _cache_singleton = None
+    _introspection_client_singleton = None
+    _introspection_cache_singleton = None
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +190,8 @@ def _try_demo_user(token: str, settings: Settings) -> User | None:
 async def get_current_user(
     authorization: str | None = Header(default=None),
     settings: Settings = Depends(get_settings_dep),
+    introspection_client: IntrospectionClient | None = Depends(get_introspection_client),
+    introspection_cache: IntrospectionCache = Depends(get_introspection_cache),
 ) -> User:
     token = _extract_bearer(authorization)
     # Demo bypass — accept tokens issued by the demo backend's JWT secret
@@ -151,6 +201,10 @@ async def get_current_user(
     if demo_user is not None:
         return demo_user
     try:
+        if token.startswith(BOOTSTRAP_TOKEN_PREFIX):
+            return verify_bootstrap_token(token, settings)
+        if token.startswith(OPAQUE_TOKEN_PREFIX) and introspection_client is not None:
+            return await verify_opaque_token(token, introspection_client, introspection_cache)
         payload = verify_user_jwt(token, settings)
     except AuthError as exc:
         raise HTTPException(
@@ -289,3 +343,41 @@ class ServiceKeyAuth:
                 detail=str(exc),
             ) from exc
         return ServiceKey(**payload.model_dump())
+
+
+# ---------------------------------------------------------------------------
+# require_scope — opaque/bootstrap-token scope guard
+# ---------------------------------------------------------------------------
+def _scope_grants(user_scopes: list[str], required: str) -> bool:
+    """Check whether ``user_scopes`` grant ``required``.
+
+    Rules:
+    - ``"*"`` grants any required scope.
+    - exact match.
+    - prefix wildcard: ``"gateway:*"`` grants ``"gateway:models:write"``.
+    """
+    for granted in user_scopes:
+        if granted == "*" or granted == required:
+            return True
+        if granted.endswith(":*") and required.startswith(granted[:-1]):
+            return True
+    return False
+
+
+def require_scope(required: str) -> Callable[..., Awaitable[None]]:
+    """Build a dependency that asserts ``required`` is in the user's scope.
+
+    Raises 403 on miss. Designed for opaque-token / bootstrap flows where the
+    OpenFGA model is bypassed; for tuple-based checks use ``require_permission``.
+    """
+    if not required:
+        raise ValueError("require_scope: required scope must not be empty")
+
+    async def _dep(user: User = Depends(get_current_user)) -> None:
+        if not _scope_grants(user.scope, required):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"missing required scope: {required}",
+            )
+
+    return _dep

@@ -111,6 +111,10 @@ def reset_settings_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[pytest.Monke
         "USER_JWT_ALGORITHM",
         "USER_JWT_AUDIENCE",
         "PERMISSION_CACHE_TTL_S",
+        "INTROSPECTION_URL",
+        "INTROSPECTION_CLIENT_ID",
+        "INTROSPECTION_CLIENT_SECRET",
+        "BOOTSTRAP_TOKEN_HASH",
     ]:
         monkeypatch.delenv(env, raising=False)
     yield monkeypatch

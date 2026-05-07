@@ -21,8 +21,15 @@ Lock-in references
 
 from __future__ import annotations
 
-from .auth import AuthError, parse_user_token, verify_service_jwt, verify_user_jwt
-from .cache import PermissionCache
+from .auth import (
+    AuthError,
+    parse_user_token,
+    verify_bootstrap_token,
+    verify_opaque_token,
+    verify_service_jwt,
+    verify_user_jwt,
+)
+from .cache import IntrospectionCache, PermissionCache
 from .client import OpenFGAAuthError, OpenFGAClient, OpenFGAError
 from .deps import (
     CurrentUser,
@@ -31,16 +38,21 @@ from .deps import (
     ServiceKeyAuth,
     get_active_tenant_id,
     get_current_user,
+    get_introspection_cache,
+    get_introspection_client,
     get_openfga_client,
     get_permission_cache,
     get_settings_dep,
     require_permission,
+    require_scope,
     reset_singletons,
 )
+from .introspection import IntrospectionClient
 from .service_token_minter import ServiceTokenMinter, ServiceTokenMinterError
 from .settings import Settings, get_settings, reset_settings_cache
 from .types import (
     SERVICE_AUDIENCES,
+    IntrospectionResponse,
     Permission,
     ServiceAudience,
     ServiceTokenPayload,
@@ -57,6 +69,9 @@ __all__ = [
     "AuthError",
     "CurrentUser",
     "FGAClientProtocol",
+    "IntrospectionCache",
+    "IntrospectionClient",
+    "IntrospectionResponse",
     "OpenFGAAuthError",
     "OpenFGAClient",
     "OpenFGAError",
@@ -78,14 +93,19 @@ __all__ = [
     "__version__",
     "get_active_tenant_id",
     "get_current_user",
+    "get_introspection_cache",
+    "get_introspection_client",
     "get_openfga_client",
     "get_permission_cache",
     "get_settings",
     "get_settings_dep",
     "parse_user_token",
     "require_permission",
+    "require_scope",
     "reset_settings_cache",
     "reset_singletons",
+    "verify_bootstrap_token",
+    "verify_opaque_token",
     "verify_service_jwt",
     "verify_user_jwt",
 ]

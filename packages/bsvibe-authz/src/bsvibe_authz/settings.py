@@ -67,6 +67,17 @@ class Settings(BaseSettings):
     # Permission cache.
     permission_cache_ttl_s: int = 30
 
+    # RFC 7662 OAuth2 token introspection (opaque session tokens issued by
+    # BSVibe-Auth). Empty introspection_url disables the opaque-token path —
+    # the verifier then only handles JWT and bootstrap tokens.
+    introspection_url: str = ""
+    introspection_client_id: str = ""
+    introspection_client_secret: str = ""
+
+    # SHA-256 hex digest of the bootstrap admin token (`bsv_admin_<...>`).
+    # Empty disables the bootstrap path.
+    bootstrap_token_hash: str = ""
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

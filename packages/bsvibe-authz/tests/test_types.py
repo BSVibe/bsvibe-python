@@ -103,3 +103,64 @@ def test_permission_string_validation() -> None:
 
     with pytest.raises(ValueError):
         Permission.parse("invalidformat")
+
+
+def test_user_has_scope_field_default_empty() -> None:
+    from bsvibe_authz.types import User
+
+    u = User(id="alice")
+    assert u.scope == []
+
+
+def test_user_accepts_scope_list() -> None:
+    from bsvibe_authz.types import User
+
+    u = User(id="bootstrap", scope=["*"])
+    assert u.scope == ["*"]
+
+
+def test_introspection_response_inactive_short_form() -> None:
+    """RFC 7662 §2.2 — an inactive token MAY omit all other fields."""
+    from bsvibe_authz.types import IntrospectionResponse
+
+    r = IntrospectionResponse.model_validate({"active": False})
+    assert r.active is False
+    assert r.sub is None
+    assert r.tenant is None
+    assert r.aud is None
+    assert r.scope is None
+    assert r.exp is None
+    assert r.client_id is None
+    assert r.username is None
+
+
+def test_introspection_response_full_active_form() -> None:
+    from bsvibe_authz.types import IntrospectionResponse
+
+    r = IntrospectionResponse.model_validate(
+        {
+            "active": True,
+            "sub": "user-123",
+            "tenant": "t-1",
+            "aud": ["bsage", "bsgateway"],
+            "scope": ["gateway:models:read", "gateway:models:write"],
+            "exp": 1733827200,
+            "client_id": "client-abc",
+            "username": "alice@bsvibe.dev",
+        }
+    )
+    assert r.active is True
+    assert r.sub == "user-123"
+    assert r.tenant == "t-1"
+    assert r.aud == ["bsage", "bsgateway"]
+    assert r.scope == ["gateway:models:read", "gateway:models:write"]
+    assert r.exp == 1733827200
+    assert r.client_id == "client-abc"
+    assert r.username == "alice@bsvibe.dev"
+
+
+def test_introspection_response_ignores_unknown_fields() -> None:
+    from bsvibe_authz.types import IntrospectionResponse
+
+    r = IntrospectionResponse.model_validate({"active": True, "unknown_extension": "x"})
+    assert r.active is True
