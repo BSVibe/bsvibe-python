@@ -10,6 +10,9 @@ admin access_token rotated by a launchd timer.
 
 Per-(audience, scope) instance — keeps cache invariants simple: the cached
 JWT's claims always match the minter's configuration.
+
+Built on :class:`bsvibe_core.http.HttpClientBase` for shared retry +
+redacted-logging infrastructure. The Basic-auth header is masked in logs.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from collections.abc import Iterable
 
 import httpx
 import structlog
+from bsvibe_core.http import HttpClientBase
 
 from .types import SERVICE_AUDIENCES
 
@@ -34,7 +38,7 @@ class ServiceTokenMinterError(RuntimeError):
     """Failed to mint a service token (auth-server error / network / config)."""
 
 
-class ServiceTokenMinter:
+class ServiceTokenMinter(HttpClientBase):
     """Mint and cache one service JWT for a fixed (audience, scope) pair.
 
     Construction validates audience and scope eagerly so config errors fail
@@ -73,9 +77,21 @@ class ServiceTokenMinter:
         self._client_secret = client_secret
         self._audience = audience
         self._scope = scopes
-        self._timeout_s = timeout_s
         self._safety_margin_s = max(0, int(safety_margin_s))
-        self._transport = transport
+
+        raw = f"{client_id}:{client_secret}".encode()
+        basic_auth = "Basic " + base64.b64encode(raw).decode()
+        super().__init__(
+            self._auth_url,
+            timeout_s=timeout_s,
+            retries=0,
+            headers={
+                "Authorization": basic_auth,
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+            transport=transport,
+        )
 
         self._cached_token: str | None = None
         self._cached_exp: int = 0
@@ -109,32 +125,17 @@ class ServiceTokenMinter:
             return False
         return int(time.time()) < (self._cached_exp - self._safety_margin_s)
 
-    def _basic_auth_header(self) -> str:
-        raw = f"{self._client_id}:{self._client_secret}".encode()
-        return "Basic " + base64.b64encode(raw).decode()
-
     async def _mint(self) -> None:
-        url = f"{self._auth_url}/api/oauth/token"
         body = {
             "grant_type": "client_credentials",
             "audience": self._audience,
             "scope": " ".join(self._scope),
         }
-        headers = {
-            "Authorization": self._basic_auth_header(),
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Accept": "application/json",
-        }
-
-        client_kwargs: dict[str, object] = {"timeout": self._timeout_s}
-        if self._transport is not None:
-            client_kwargs["transport"] = self._transport
 
         try:
-            async with httpx.AsyncClient(**client_kwargs) as cli:  # type: ignore[arg-type]
-                resp = await cli.post(url=url, data=body, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
+            resp = await self.post("/api/oauth/token", data=body)
+            resp.raise_for_status()
+            data = resp.json()
         except httpx.HTTPStatusError as exc:
             logger.error(
                 "service_token_mint_http_error",

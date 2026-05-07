@@ -4,6 +4,7 @@ version = "0.8.0"
 description = "BSVibe shared authorization library — JWT verification, OpenFGA client, FastAPI deps"
 requires-python = ">=3.11"
 dependencies = [
+    "bsvibe-core",
     "pydantic>=2",
     "pydantic-settings>=2.0.0",
     "httpx>=0.27",

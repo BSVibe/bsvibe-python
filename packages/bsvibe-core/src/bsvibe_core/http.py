@@ -82,6 +82,7 @@ class HttpClientBase:
         timeout_s: float = 5.0,
         retries: int = 2,
         headers: Mapping[str, str] | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._base_url = base_url
         self._timeout_s = timeout_s
@@ -89,16 +90,20 @@ class HttpClientBase:
         self._headers: dict[str, str] = dict(headers) if headers else {}
         self._http: httpx.AsyncClient | None = http
         self._owns_http: bool = http is None
+        self._transport = transport
 
     @property
     def http(self) -> httpx.AsyncClient:
         """Underlying ``httpx.AsyncClient``, built lazily on first access."""
 
         if self._http is None:
-            self._http = httpx.AsyncClient(
-                base_url=self._base_url,
-                timeout=httpx.Timeout(self._timeout_s),
-            )
+            kwargs: dict[str, Any] = {
+                "base_url": self._base_url,
+                "timeout": self._timeout_s,
+            }
+            if self._transport is not None:
+                kwargs["transport"] = self._transport
+            self._http = httpx.AsyncClient(**kwargs)
         return self._http
 
     @property
@@ -152,6 +157,8 @@ class HttpClientBase:
         path: str,
         *,
         json: Any | None = None,
+        data: Any | None = None,
+        content: Any | None = None,
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
         auth: Any | None = None,
@@ -167,24 +174,34 @@ class HttpClientBase:
         represent client-side errors that retrying will not fix. The
         final exception (after exhausted retries) is re-raised verbatim
         so callers can pattern-match on httpx exception classes.
+
+        Dispatches via the method-specific ``httpx.AsyncClient`` helper
+        (``post``/``get``/...) so test suites that monkey-patch those
+        attributes (rather than the underlying transport) keep working.
         """
 
         merged_headers = {**self._headers, **(dict(headers) if headers else {})}
         log_headers = redact_headers(merged_headers)
         max_attempts = self._retries + 1
         last_error: BaseException | None = None
+        method_attr = method.lower()
 
         for attempt in range(max_attempts):
             start = time.monotonic()
             try:
-                resp = await self.http.request(
-                    method,
-                    path,
-                    json=json,
-                    params=params,
-                    headers=merged_headers,
-                    auth=auth,
-                )
+                http_method = getattr(self.http, method_attr)
+                call_kwargs: dict[str, Any] = {
+                    "params": params,
+                    "headers": merged_headers,
+                    "auth": auth,
+                }
+                if json is not None:
+                    call_kwargs["json"] = json
+                if data is not None:
+                    call_kwargs["data"] = data
+                if content is not None:
+                    call_kwargs["content"] = content
+                resp = await http_method(path, **call_kwargs)
             except httpx.HTTPError as exc:
                 duration_ms = (time.monotonic() - start) * 1000
                 last_error = exc

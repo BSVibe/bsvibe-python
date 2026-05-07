@@ -11,7 +11,8 @@ Design notes
 * All errors surface as `OpenFGAError` (or `OpenFGAAuthError` for 401/403).
   Phase 0 chooses to *raise* on 401 rather than re-issue the API token —
   the gateway-side retry is a follow-up (see lock-in §3 #16 follow-up).
-* Logging uses structlog to stay consistent with downstream products.
+* Built on :class:`bsvibe_core.http.HttpClientBase` for shared retry +
+  redacted-logging infrastructure.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from typing import Any
 
 import httpx
 import structlog
+from bsvibe_core.http import HttpClientBase
 
 from .settings import Settings
 
@@ -40,7 +42,7 @@ class OpenFGAAuthError(OpenFGAError):
     """OpenFGA rejected the API token (401/403)."""
 
 
-class OpenFGAClient:
+class OpenFGAClient(HttpClientBase):
     """Small async wrapper around the OpenFGA HTTP API.
 
     Use as an async context manager so the underlying httpx client is closed:
@@ -51,16 +53,19 @@ class OpenFGAClient:
 
     def __init__(self, settings: Settings, http: httpx.AsyncClient | None = None) -> None:
         self._settings = settings
-        timeout = httpx.Timeout(settings.openfga_request_timeout_s)
         headers: dict[str, str] = {"content-type": "application/json"}
         if settings.openfga_auth_token:
             headers["authorization"] = f"Bearer {settings.openfga_auth_token}"
-        self._http = http or httpx.AsyncClient(
-            base_url=settings.openfga_api_url,
-            timeout=timeout,
+        super().__init__(
+            settings.openfga_api_url,
+            http=http,
+            timeout_s=settings.openfga_request_timeout_s,
+            retries=0,
             headers=headers,
         )
-        self._owns_http = http is None
+        # Eager-build so callers can inspect ``self._http`` directly
+        # (preserves the existing timeout-on-the-client contract).
+        _ = self.http
 
     async def __aenter__(self) -> "OpenFGAClient":
         return self
@@ -73,17 +78,13 @@ class OpenFGAClient:
     ) -> None:
         await self.aclose()
 
-    async def aclose(self) -> None:
-        if self._owns_http:
-            await self._http.aclose()
-
     @property
     def _store_path(self) -> str:
         return f"/stores/{self._settings.openfga_store_id}"
 
     async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         try:
-            resp = await self._http.post(path, json=payload)
+            resp = await self.post(path, json=payload)
         except httpx.HTTPError as exc:
             logger.error("openfga_request_failed", path=path, error=str(exc))
             raise OpenFGAError(0, {"network_error": str(exc)}) from exc
