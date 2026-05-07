@@ -1,5 +1,6 @@
 """FastAPI Depends integration tests."""
 
+import hashlib
 from collections.abc import Callable
 from typing import Any
 
@@ -8,8 +9,16 @@ from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from bsvibe_authz import deps as deps_mod
-from bsvibe_authz.deps import CurrentUser, ServiceKey, ServiceKeyAuth, require_permission
+from bsvibe_authz.cache import IntrospectionCache
+from bsvibe_authz.deps import (
+    CurrentUser,
+    ServiceKey,
+    ServiceKeyAuth,
+    require_permission,
+    require_scope,
+)
 from bsvibe_authz.settings import Settings
+from bsvibe_authz.types import IntrospectionResponse, User
 
 
 @pytest.fixture
@@ -208,3 +217,186 @@ def test_tenant_scoped_403_when_no_active_tenant(deps_settings, user_jwt_secret,
     with TestClient(app) as client:
         resp = client.get("/tenant-id", headers=_bearer(token))
         assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# TASK-006: 3-way dispatch + require_scope
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def bootstrap_token() -> str:
+    return "bsv_admin_supersecret"
+
+
+@pytest.fixture
+def bootstrap_settings(deps_settings: Settings, bootstrap_token: str) -> Settings:
+    digest = hashlib.sha256(bootstrap_token.encode()).hexdigest()
+    return deps_settings.model_copy(update={"bootstrap_token_hash": digest})
+
+
+@pytest.fixture
+def opaque_settings(deps_settings: Settings) -> Settings:
+    return deps_settings.model_copy(
+        update={
+            "introspection_url": "https://auth.bsvibe.dev/oauth/introspect",
+            "introspection_client_id": "bsage",
+            "introspection_client_secret": "shh",
+        },
+    )
+
+
+class _FakeIntrospectionClient:
+    def __init__(self, response: IntrospectionResponse) -> None:
+        self._response = response
+        self.calls: list[str] = []
+
+    async def introspect(self, token: str) -> IntrospectionResponse:
+        self.calls.append(token)
+        return self._response
+
+
+def _build_dispatch_app(settings: Settings, fake_client: Any | None = None) -> FastAPI:
+    deps_mod.reset_singletons()
+    app = FastAPI()
+    app.dependency_overrides[deps_mod.get_settings_dep] = lambda: settings
+    if fake_client is not None:
+        app.dependency_overrides[deps_mod.get_introspection_client] = lambda: fake_client
+        app.dependency_overrides[deps_mod.get_introspection_cache] = lambda: IntrospectionCache(ttl_s=60)
+
+    @app.get("/me")
+    async def me(user: CurrentUser) -> dict:
+        return {"id": user.id, "scope": user.scope, "is_service": user.is_service}
+
+    return app
+
+
+def test_dispatch_bootstrap_token(bootstrap_settings, bootstrap_token) -> None:
+    app = _build_dispatch_app(bootstrap_settings)
+    with TestClient(app) as client:
+        resp = client.get("/me", headers=_bearer(bootstrap_token))
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["id"] == "bootstrap"
+        assert body["scope"] == ["*"]
+        assert body["is_service"] is True
+
+
+def test_dispatch_bootstrap_token_wrong_value_returns_401(bootstrap_settings) -> None:
+    app = _build_dispatch_app(bootstrap_settings)
+    with TestClient(app) as client:
+        resp = client.get("/me", headers=_bearer("bsv_admin_wrong"))
+        assert resp.status_code == 401
+
+
+def test_dispatch_opaque_token_active(opaque_settings) -> None:
+    fake = _FakeIntrospectionClient(
+        IntrospectionResponse(
+            active=True,
+            sub="user-123",
+            tenant="t-1",
+            scope=["gateway:models:read"],
+        ),
+    )
+    app = _build_dispatch_app(opaque_settings, fake_client=fake)
+    with TestClient(app) as client:
+        resp = client.get("/me", headers=_bearer("bsv_sk_live_token"))
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["id"] == "user-123"
+        assert body["scope"] == ["gateway:models:read"]
+
+
+def test_dispatch_opaque_token_inactive_returns_401(opaque_settings) -> None:
+    fake = _FakeIntrospectionClient(IntrospectionResponse(active=False))
+    app = _build_dispatch_app(opaque_settings, fake_client=fake)
+    with TestClient(app) as client:
+        resp = client.get("/me", headers=_bearer("bsv_sk_dead_token"))
+        assert resp.status_code == 401
+
+
+def test_dispatch_opaque_token_falls_back_to_jwt_when_introspection_disabled(deps_settings, make_user_jwt) -> None:
+    """No introspection_url configured -> bsv_sk_ tokens still go to JWT path (will fail)."""
+    app = _build_dispatch_app(deps_settings)
+    with TestClient(app) as client:
+        resp = client.get("/me", headers=_bearer("bsv_sk_unknown"))
+        assert resp.status_code == 401  # not a valid JWT
+
+
+def test_dispatch_jwt_token(deps_settings, make_user_jwt) -> None:
+    app = _build_dispatch_app(deps_settings)
+    with TestClient(app) as client:
+        token = make_user_jwt(sub="u-1")
+        resp = client.get("/me", headers=_bearer(token))
+        assert resp.status_code == 200
+        assert resp.json()["id"] == "u-1"
+
+
+# ---- require_scope ---------------------------------------------------------
+
+
+def _scope_app(user: User, required: str) -> FastAPI:
+    deps_mod.reset_singletons()
+    app = FastAPI()
+    app.dependency_overrides[deps_mod.get_current_user] = lambda: user
+
+    @app.get("/scoped")
+    async def scoped(_dep: None = Depends(require_scope(required))) -> dict:
+        return {"ok": True}
+
+    return app
+
+
+def test_require_scope_exact_match() -> None:
+    user = User(id="u-1", scope=["gateway:models:read"])
+    with TestClient(_scope_app(user, "gateway:models:read")) as client:
+        resp = client.get("/scoped")
+        assert resp.status_code == 200
+
+
+def test_require_scope_star_grants_all() -> None:
+    user = User(id="bootstrap", scope=["*"], is_service=True)
+    with TestClient(_scope_app(user, "anything:goes")) as client:
+        resp = client.get("/scoped")
+        assert resp.status_code == 200
+
+
+def test_require_scope_prefix_wildcard() -> None:
+    user = User(id="u-1", scope=["gateway:*"])
+    with TestClient(_scope_app(user, "gateway:models:write")) as client:
+        resp = client.get("/scoped")
+        assert resp.status_code == 200
+
+
+def test_require_scope_403_when_missing() -> None:
+    user = User(id="u-1", scope=["gateway:models:read"])
+    with TestClient(_scope_app(user, "gateway:models:write")) as client:
+        resp = client.get("/scoped")
+        assert resp.status_code == 403
+
+
+def test_require_scope_empty_scope_403() -> None:
+    user = User(id="u-1", scope=[])
+    with TestClient(_scope_app(user, "anything")) as client:
+        resp = client.get("/scoped")
+        assert resp.status_code == 403
+
+
+# ---- lazy singleton sanity -------------------------------------------------
+
+
+def test_get_introspection_cache_singleton(opaque_settings) -> None:
+    deps_mod.reset_singletons()
+    a = deps_mod.get_introspection_cache(opaque_settings)
+    b = deps_mod.get_introspection_cache(opaque_settings)
+    assert a is b
+
+
+def test_get_introspection_client_singleton(opaque_settings) -> None:
+    deps_mod.reset_singletons()
+    a = deps_mod.get_introspection_client(opaque_settings)
+    b = deps_mod.get_introspection_client(opaque_settings)
+    assert a is b
+
+
+def test_get_introspection_client_returns_none_when_disabled(deps_settings) -> None:
+    deps_mod.reset_singletons()
+    assert deps_mod.get_introspection_client(deps_settings) is None
