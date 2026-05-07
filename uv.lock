@@ -300,7 +300,7 @@ requires-dist = [
 
 [[package]]
 name = "bsvibe-authz"
-version = "0.7.0"
+version = "0.8.0"
 source = { editable = "packages/bsvibe-authz" }
 dependencies = [
     { name = "fastapi" },
@@ -326,6 +326,7 @@ name = "bsvibe-core"
 version = "0.1.0"
 source = { editable = "packages/bsvibe-core" }
 dependencies = [
+    { name = "httpx" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "structlog" },
@@ -333,6 +334,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2" },
     { name = "pydantic-settings", specifier = ">=2.5" },
     { name = "structlog", specifier = ">=24" },

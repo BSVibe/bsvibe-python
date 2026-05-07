@@ -25,6 +25,7 @@ from bsvibe_core.exceptions import (
     NotFoundError,
     ValidationError,
 )
+from bsvibe_core.http import HttpClientBase, redact_headers
 from bsvibe_core.logging import configure_logging
 from bsvibe_core.settings import (
     BsvibeSettings,
@@ -41,6 +42,8 @@ __all__ = [
     "ConfigurationError",
     "ValidationError",
     "NotFoundError",
+    "HttpClientBase",
+    "redact_headers",
     "csv_list_field",
     "parse_csv_list",
     "__version__",
