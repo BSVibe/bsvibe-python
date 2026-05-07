@@ -1,10 +1,10 @@
-"""Tests for the ``bsvibe-audit`` CLI.
+"""Tests for the ``bsvibe-audit`` Typer CLI.
 
 The CLI is intentionally thin: every command shells out to a small
-function ("driver") that does the actual work. Tests target both the
-Click wiring (option parsing, exit codes, formatting) via ``CliRunner``
-and the driver functions directly so we can keep coverage high without
-mocking the Click context.
+function ("driver") that does the actual work. Tests target the Typer
+wiring (option parsing, exit codes, formatting) via
+:class:`typer.testing.CliRunner` and the driver functions directly so
+we can keep coverage high without touching the Typer context.
 
 Network and DB collaborators are always mocked — these tests must not
 touch real endpoints or databases.
@@ -18,10 +18,9 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
-import httpx
-from click.testing import CliRunner
+from typer.testing import CliRunner
 
-from bsvibe_audit.cli import main
+from bsvibe_audit.cli import app, main
 
 
 # ---------------------------------------------------------------------------
@@ -37,10 +36,6 @@ class _DummyResponse:
 
     def json(self) -> dict[str, Any]:
         return self._payload
-
-    def raise_for_status(self) -> None:
-        if self.status_code >= 400:
-            raise httpx.HTTPStatusError("err", request=None, response=None)  # type: ignore[arg-type]
 
 
 def test_query_outputs_json_table_default() -> None:
@@ -69,7 +64,7 @@ def test_query_outputs_json_table_default() -> None:
     with patch("bsvibe_audit.cli.httpx.Client") as MockClient:
         MockClient.return_value.__enter__.return_value.post.return_value = response
         result = runner.invoke(
-            main,
+            app,
             [
                 "query",
                 "--audit-url",
@@ -112,7 +107,7 @@ def test_query_emits_csv_output() -> None:
     with patch("bsvibe_audit.cli.httpx.Client") as MockClient:
         MockClient.return_value.__enter__.return_value.post.return_value = response
         result = runner.invoke(
-            main,
+            app,
             [
                 "query",
                 "--audit-url",
@@ -137,7 +132,7 @@ def test_query_table_format_renders_header() -> None:
     with patch("bsvibe_audit.cli.httpx.Client") as MockClient:
         MockClient.return_value.__enter__.return_value.post.return_value = response
         result = runner.invoke(
-            main,
+            app,
             [
                 "query",
                 "--audit-url",
@@ -155,10 +150,49 @@ def test_query_table_format_renders_header() -> None:
     assert "event_type" in result.output
 
 
+def test_query_format_is_case_insensitive() -> None:
+    """Backwards-compat: the click CLI used Choice(case_sensitive=False)."""
+
+    runner = CliRunner()
+    response = _DummyResponse(payload={"events": []})
+    with patch("bsvibe_audit.cli.httpx.Client") as MockClient:
+        MockClient.return_value.__enter__.return_value.post.return_value = response
+        result = runner.invoke(
+            app,
+            [
+                "query",
+                "--audit-url",
+                "https://auth.test/api/audit/query",
+                "--token",
+                "svc",
+                "--format",
+                "JSON",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+
+
+def test_query_rejects_unknown_format() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "query",
+            "--audit-url",
+            "https://auth.test/api/audit/query",
+            "--token",
+            "svc",
+            "--format",
+            "xml",
+        ],
+    )
+    assert result.exit_code != 0
+
+
 def test_query_requires_token() -> None:
     runner = CliRunner()
     result = runner.invoke(
-        main,
+        app,
         [
             "query",
             "--audit-url",
@@ -167,21 +201,18 @@ def test_query_requires_token() -> None:
             "t-1",
         ],
     )
-    # Click prints the missing-option message and exits 2.
+    # Typer prints the missing-option message and exits non-zero.
     assert result.exit_code != 0
-    assert "token" in result.output.lower() or "Missing option" in result.output
+    assert "token" in result.output.lower() or "missing option" in result.output.lower()
 
 
 def test_query_propagates_http_error() -> None:
     runner = CliRunner()
     response = _DummyResponse(status_code=500, payload={"error": "boom"})
-    response.raise_for_status = lambda: (_ for _ in ()).throw(  # type: ignore[assignment]
-        httpx.HTTPStatusError("boom", request=None, response=None)  # type: ignore[arg-type]
-    )
     with patch("bsvibe_audit.cli.httpx.Client") as MockClient:
         MockClient.return_value.__enter__.return_value.post.return_value = response
         result = runner.invoke(
-            main,
+            app,
             [
                 "query",
                 "--audit-url",
@@ -195,6 +226,51 @@ def test_query_propagates_http_error() -> None:
     assert result.exit_code == 1
 
 
+def test_query_token_envvar_fallback(monkeypatch) -> None:
+    """Backwards-compat: --token reads from BSVIBE_AUDIT_TOKEN / BSVIBE_AUTH_AUDIT_SERVICE_TOKEN."""
+
+    runner = CliRunner()
+    response = _DummyResponse(payload={"events": []})
+    monkeypatch.setenv("BSVIBE_AUDIT_TOKEN", "from-env")
+    with patch("bsvibe_audit.cli.httpx.Client") as MockClient:
+        MockClient.return_value.__enter__.return_value.post.return_value = response
+        result = runner.invoke(
+            app,
+            [
+                "query",
+                "--audit-url",
+                "https://auth.test/api/audit/query",
+                "--format",
+                "json",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+
+
+def test_query_propagates_non_json_body() -> None:
+    runner = CliRunner()
+
+    class _BadJson(_DummyResponse):
+        def json(self) -> dict[str, Any]:
+            raise ValueError("not json")
+
+    response = _BadJson(payload={})
+    with patch("bsvibe_audit.cli.httpx.Client") as MockClient:
+        MockClient.return_value.__enter__.return_value.post.return_value = response
+        result = runner.invoke(
+            app,
+            [
+                "query",
+                "--audit-url",
+                "https://auth.test/api/audit/query",
+                "--token",
+                "svc",
+            ],
+        )
+    assert result.exit_code == 1
+    assert "non-json" in result.output.lower()
+
+
 # ---------------------------------------------------------------------------
 # retry-failed
 # ---------------------------------------------------------------------------
@@ -206,8 +282,19 @@ def test_retry_failed_invokes_outbox_helper(monkeypatch) -> None:
     fake_helper = AsyncMock(return_value=2)
     monkeypatch.setattr("bsvibe_audit.cli._retry_dead_letter", fake_helper)
 
+    # AuditClient.aclose is awaited in the cli wrapper; AuditClient.__init__
+    # would otherwise instantiate a real httpx client, which is fine, but we
+    # replace the whole class to avoid SQL engine creation as well.
+    fake_engine_dispose = AsyncMock()
+
+    class _FakeEngine:
+        dispose = fake_engine_dispose
+
+    monkeypatch.setattr("bsvibe_audit.cli.create_async_engine", lambda url: _FakeEngine())
+    monkeypatch.setattr("bsvibe_audit.cli.async_sessionmaker", lambda engine, **kw: object())
+
     result = runner.invoke(
-        main,
+        app,
         [
             "retry-failed",
             "--db-url",
@@ -247,7 +334,7 @@ def test_retention_export_writes_file(tmp_path: Path) -> None:
     with patch("bsvibe_audit.cli.httpx.Client") as MockClient:
         MockClient.return_value.__enter__.return_value.post.return_value = response
         result = runner.invoke(
-            main,
+            app,
             [
                 "retention-export",
                 "--audit-url",
@@ -272,7 +359,7 @@ def test_retention_export_writes_file(tmp_path: Path) -> None:
 def test_retention_export_rejects_unsupported_scheme(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
-        main,
+        app,
         [
             "retention-export",
             "--audit-url",
@@ -305,7 +392,7 @@ def test_replay_invokes_helper(monkeypatch) -> None:
     since = (datetime.now(UTC) - timedelta(days=1)).isoformat()
     until = datetime.now(UTC).isoformat()
     result = runner.invoke(
-        main,
+        app,
         [
             "replay",
             "--audit-url",
@@ -326,7 +413,7 @@ def test_replay_invokes_helper(monkeypatch) -> None:
 def test_replay_rejects_invalid_iso() -> None:
     runner = CliRunner()
     result = runner.invoke(
-        main,
+        app,
         [
             "replay",
             "--audit-url",
@@ -349,10 +436,16 @@ def test_replay_rejects_invalid_iso() -> None:
 
 def test_main_help_lists_all_commands() -> None:
     runner = CliRunner()
-    result = runner.invoke(main, ["--help"])
+    result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
     for cmd in ("query", "retry-failed", "retention-export", "replay"):
         assert cmd in result.output
+
+
+def test_main_entrypoint_callable() -> None:
+    """The console-script entry point ``bsvibe_audit.cli:main`` stays callable."""
+
+    assert callable(main)
 
 
 async def test_retry_dead_letter_helper_drains_dead_letter_rows() -> None:
@@ -452,3 +545,28 @@ async def test_replay_events_helper_paginates_results() -> None:
         )
     assert delivered == 2
     assert [e["event_id"] for e in seen] == ["e-1", "e-2"]
+
+
+def test_cli_module_does_not_import_click() -> None:
+    """Ensure the migration removed the click dependency from cli.py."""
+
+    import ast
+
+    import bsvibe_audit.cli as cli_module
+
+    tree = ast.parse(Path(cli_module.__file__).read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert alias.name.split(".")[0] != "click", "click is still imported"
+        elif isinstance(node, ast.ImportFrom):
+            assert (node.module or "").split(".")[0] != "click", "click is still imported from"
+    assert "click" not in cli_module.__dict__
+
+
+def test_unused_httpx_import_attribute_present() -> None:
+    """Tests patch ``bsvibe_audit.cli.httpx.Client``; ensure httpx is re-exported."""
+
+    import bsvibe_audit.cli as cli_module
+
+    assert hasattr(cli_module, "httpx")

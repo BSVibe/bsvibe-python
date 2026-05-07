@@ -278,24 +278,24 @@ source = { editable = "packages/bsvibe-audit" }
 dependencies = [
     { name = "bsvibe-alerts" },
     { name = "bsvibe-core" },
-    { name = "click" },
     { name = "httpx" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "structlog" },
+    { name = "typer" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "bsvibe-alerts", editable = "packages/bsvibe-alerts" },
     { name = "bsvibe-core", editable = "packages/bsvibe-core" },
-    { name = "click", specifier = ">=8.1" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2" },
     { name = "pydantic-settings", specifier = ">=2.5" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
     { name = "structlog", specifier = ">=24" },
+    { name = "typer", specifier = ">=0.12" },
 ]
 
 [[package]]
