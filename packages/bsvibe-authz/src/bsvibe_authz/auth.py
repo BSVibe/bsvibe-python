@@ -14,13 +14,19 @@ Two distinct flows
 
 from __future__ import annotations
 
-from typing import Any
+import hashlib
+import hmac
+from typing import TYPE_CHECKING, Any
 
 import jwt
 import structlog
 
 from .settings import Settings
 from .types import ServiceAudience, ServiceTokenPayload, User
+
+if TYPE_CHECKING:
+    from .cache import IntrospectionCache
+    from .introspection import IntrospectionClient
 
 logger = structlog.get_logger(__name__)
 
@@ -113,6 +119,61 @@ def verify_service_jwt(
             )
 
     return payload
+
+
+async def verify_opaque_token(
+    token: str,
+    client: IntrospectionClient,
+    cache: IntrospectionCache,
+) -> User:
+    """Verify an opaque ``bsv_sk_*`` token via RFC 7662 introspection.
+
+    Caches both active and inactive responses keyed by sha256(token) so that
+    revoked tokens cannot stampede the auth server. Raises :class:`AuthError`
+    if the token is inactive — error message MUST NOT contain the token.
+    """
+    token_sha256 = hashlib.sha256(token.encode()).hexdigest()
+    response = await cache.get(token_sha256)
+    if response is None:
+        response = await client.introspect(token)
+        await cache.set(token_sha256, response)
+
+    if not response.active:
+        logger.info("opaque_token_inactive", token_sha256=token_sha256)
+        raise AuthError("opaque token is not active")
+
+    return User(
+        id=response.sub or "",
+        active_tenant_id=response.tenant,
+        scope=list(response.scope or []),
+        is_service=False,
+        email=None,
+    )
+
+
+def verify_bootstrap_token(token: str, settings: Settings) -> User:
+    """Verify a ``bsv_admin_*`` bootstrap token via constant-time digest compare.
+
+    Returns an admin :class:`User` (``id='bootstrap'``, ``scope=['*']``) on
+    match. Raises :class:`AuthError` when the digest does not match or when
+    ``settings.bootstrap_token_hash`` is empty (bootstrap path disabled).
+    """
+    expected = settings.bootstrap_token_hash
+    if not expected:
+        raise AuthError("bootstrap token path is not configured")
+
+    actual = hashlib.sha256(token.encode()).hexdigest()
+    if not hmac.compare_digest(actual, expected):
+        logger.warning("bootstrap_token_mismatch")
+        raise AuthError("bootstrap token does not match")
+
+    logger.info("bootstrap_token_accepted")
+    return User(
+        id="bootstrap",
+        scope=["*"],
+        is_service=True,
+        email=None,
+    )
 
 
 def parse_user_token(payload: dict[str, Any]) -> User:

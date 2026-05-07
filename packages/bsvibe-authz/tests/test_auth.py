@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
+from unittest.mock import AsyncMock
 
 import jwt
 import pytest
@@ -208,3 +210,146 @@ async def test_parse_user_token_returns_user(auth_settings, make_user_jwt) -> No
     assert user.email == "alice@bsvibe.dev"
     assert user.active_tenant_id == "t-1"
     assert user.is_service is False
+
+
+# ---------------------------------------------------------------------------
+# verify_opaque_token (RFC 7662 introspection + cache)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def opaque_cache():
+    from bsvibe_authz.cache import IntrospectionCache
+
+    return IntrospectionCache(ttl_s=60)
+
+
+def _make_active_response(**overrides):
+    from bsvibe_authz.types import IntrospectionResponse
+
+    payload = {
+        "active": True,
+        "sub": "u-1",
+        "tenant": "t-1",
+        "aud": ["bsgateway"],
+        "scope": ["gateway:models:write"],
+        "exp": 9999999999,
+        "client_id": "bsgateway-prod",
+        "username": "alice",
+    }
+    payload.update(overrides)
+    return IntrospectionResponse(**payload)
+
+
+async def test_verify_opaque_token_returns_user_on_active(opaque_cache) -> None:
+    from bsvibe_authz.auth import verify_opaque_token
+
+    client = AsyncMock()
+    client.introspect = AsyncMock(return_value=_make_active_response())
+
+    user = await verify_opaque_token("bsv_sk_abc", client, opaque_cache)
+
+    assert user.id == "u-1"
+    assert user.active_tenant_id == "t-1"
+    assert user.scope == ["gateway:models:write"]
+    assert user.is_service is False
+    client.introspect.assert_awaited_once_with("bsv_sk_abc")
+
+
+async def test_verify_opaque_token_raises_on_inactive(opaque_cache) -> None:
+    from bsvibe_authz.auth import AuthError, verify_opaque_token
+    from bsvibe_authz.types import IntrospectionResponse
+
+    client = AsyncMock()
+    client.introspect = AsyncMock(return_value=IntrospectionResponse(active=False))
+
+    with pytest.raises(AuthError) as exc_info:
+        await verify_opaque_token("bsv_sk_revoked", client, opaque_cache)
+
+    # Token contents must NOT leak into the error message.
+    assert "bsv_sk_revoked" not in str(exc_info.value)
+
+
+async def test_verify_opaque_token_uses_cache_on_repeat_calls(opaque_cache) -> None:
+    from bsvibe_authz.auth import verify_opaque_token
+
+    client = AsyncMock()
+    client.introspect = AsyncMock(return_value=_make_active_response())
+
+    user1 = await verify_opaque_token("bsv_sk_xyz", client, opaque_cache)
+    user2 = await verify_opaque_token("bsv_sk_xyz", client, opaque_cache)
+
+    assert user1.id == user2.id == "u-1"
+    # Second call should hit cache, not re-introspect.
+    client.introspect.assert_awaited_once()
+
+
+async def test_verify_opaque_token_caches_inactive_response(opaque_cache) -> None:
+    from bsvibe_authz.auth import AuthError, verify_opaque_token
+    from bsvibe_authz.types import IntrospectionResponse
+
+    client = AsyncMock()
+    client.introspect = AsyncMock(return_value=IntrospectionResponse(active=False))
+
+    for _ in range(2):
+        with pytest.raises(AuthError):
+            await verify_opaque_token("bsv_sk_revoked", client, opaque_cache)
+
+    client.introspect.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# verify_bootstrap_token (HMAC-compare against sha256 hex digest)
+# ---------------------------------------------------------------------------
+
+
+def _bootstrap_settings(token_hash: str = "") -> "object":  # noqa: F821
+    from bsvibe_authz.settings import Settings
+
+    return Settings(  # type: ignore[call-arg]
+        bsvibe_auth_url="https://auth.bsvibe.dev",
+        openfga_api_url="http://openfga.local:8080",
+        openfga_store_id="store-1",
+        openfga_auth_model_id="model-1",
+        service_token_signing_secret="s",
+        user_jwt_secret="u",
+        bootstrap_token_hash=token_hash,
+    )
+
+
+def test_verify_bootstrap_token_accepts_matching_hash() -> None:
+    from bsvibe_authz.auth import verify_bootstrap_token
+
+    token = "bsv_admin_correct-horse-battery-staple"
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    settings = _bootstrap_settings(token_hash=digest)
+
+    user = verify_bootstrap_token(token, settings)
+
+    assert user.id == "bootstrap"
+    assert user.scope == ["*"]
+    assert user.is_service is True
+
+
+def test_verify_bootstrap_token_rejects_mismatch() -> None:
+    from bsvibe_authz.auth import AuthError, verify_bootstrap_token
+
+    real = hashlib.sha256(b"bsv_admin_real").hexdigest()
+    settings = _bootstrap_settings(token_hash=real)
+
+    with pytest.raises(AuthError) as exc_info:
+        verify_bootstrap_token("bsv_admin_attacker", settings)
+
+    assert "bsv_admin_attacker" not in str(exc_info.value)
+
+
+def test_verify_bootstrap_token_rejects_when_hash_empty() -> None:
+    from bsvibe_authz.auth import AuthError, verify_bootstrap_token
+
+    settings = _bootstrap_settings(token_hash="")
+
+    # Even if the attacker submits the empty string, an unset hash MUST reject.
+    with pytest.raises(AuthError):
+        verify_bootstrap_token("", settings)
+    with pytest.raises(AuthError):
+        verify_bootstrap_token("bsv_admin_anything", settings)
