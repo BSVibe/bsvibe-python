@@ -11,11 +11,19 @@ import asyncio
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import NamedTuple
+
+from .types import IntrospectionResponse
 
 
 @dataclass(slots=True)
 class _Entry:
     value: bool
+    expires_at: float
+
+
+class _IntrospectionEntry(NamedTuple):
+    response: IntrospectionResponse
     expires_at: float
 
 
@@ -64,6 +72,50 @@ class PermissionCache:
             doomed = [k for k in self._store if k[0] == user]
             for k in doomed:
                 self._store.pop(k, None)
+
+    async def clear(self) -> None:
+        async with self._lock:
+            self._store.clear()
+
+
+class IntrospectionCache:
+    """Cache RFC 7662 introspection responses keyed by sha256(token) hex.
+
+    Both active and inactive responses are cached so that revoked tokens do
+    not stampede the auth server. Single-process — back with Redis for
+    multi-process deployments.
+    """
+
+    def __init__(
+        self,
+        ttl_s: int = 60,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        self.ttl_s = ttl_s
+        self._clock = clock or time.monotonic
+        self._lock = asyncio.Lock()
+        self._store: dict[str, _IntrospectionEntry] = {}
+
+    async def get(self, token_sha256: str) -> IntrospectionResponse | None:
+        async with self._lock:
+            entry = self._store.get(token_sha256)
+            if entry is None:
+                return None
+            if entry.expires_at <= self._clock():
+                self._store.pop(token_sha256, None)
+                return None
+            return entry.response
+
+    async def set(self, token_sha256: str, response: IntrospectionResponse) -> None:
+        async with self._lock:
+            self._store[token_sha256] = _IntrospectionEntry(
+                response=response,
+                expires_at=self._clock() + self.ttl_s,
+            )
+
+    async def invalidate(self, token_sha256: str) -> None:
+        async with self._lock:
+            self._store.pop(token_sha256, None)
 
     async def clear(self) -> None:
         async with self._lock:
