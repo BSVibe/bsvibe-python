@@ -1,21 +1,67 @@
 """MCP server factory.
 
-The factory is the single construction seam for the MCP server. At this
-stage it returns a bare :class:`mcp.server.Server` — TASK-003+ will wire
-the four product CLIs (bsgateway / bsage / bsnexus / bsupervisor) via
-:class:`bsvibe_mcp.registry.MCPToolRegistry`.
+Builds an :class:`mcp.server.Server` and registers the four product
+CLIs (bsgateway / bsage / bsnexus / bsupervisor) as MCP tools via
+:class:`bsvibe_mcp.registry.MCPToolRegistry`. Each product's CLI is
+imported lazily — if the product package isn't installed in the
+runtime environment, registration is skipped with a single
+``structlog`` warning so the server stays usable for the products
+that *are* installed.
 
-Keeping the factory thin (no I/O, no env reads) lets tests instantiate
-the server cheaply and lets transports own their own runtime concerns.
+Tool naming follows ``{product}_{group}_{cmd}`` — e.g.
+``bsgateway_models_list``, ``bsage_canon_apply``. Args carry through
+the root callback's ``--token`` / ``--tenant`` / ``--url`` /
+``--dry-run`` flags as reserved input-schema keys (see
+:class:`MCPToolRegistry.register_cli_app`).
 """
 
 from __future__ import annotations
 
+import importlib
+
+import structlog
 from mcp.server import Server
+
+from bsvibe_mcp.registry import MCPToolRegistry
+
+logger = structlog.get_logger(__name__)
 
 DEFAULT_SERVER_NAME = "bsvibe-mcp"
 
+# (prefix, dotted import path of the root Typer app)
+_PRODUCT_CLI_MODULES: tuple[tuple[str, str], ...] = (("bsgateway", "bsgateway.cli.main"),)
 
-def build_server(name: str = DEFAULT_SERVER_NAME) -> Server:
-    """Construct a fresh MCP server with no tools registered."""
-    return Server(name)
+
+def build_server(
+    name: str = DEFAULT_SERVER_NAME,
+    *,
+    products: tuple[tuple[str, str], ...] | None = None,
+) -> Server:
+    """Construct an MCP server with product CLIs registered as tools.
+
+    Parameters
+    ----------
+    name:
+        MCP server name advertised to clients.
+    products:
+        Override the default product list (``[(prefix, module_path)]``).
+        Tests pass a custom tuple to keep registration narrow.
+    """
+    server = Server(name)
+    registry = MCPToolRegistry(server)
+    for prefix, module_path in products if products is not None else _PRODUCT_CLI_MODULES:
+        _try_register(registry, prefix, module_path)
+    return server
+
+
+def _try_register(registry: MCPToolRegistry, prefix: str, module_path: str) -> None:
+    try:
+        module = importlib.import_module(module_path)
+    except ImportError as exc:
+        logger.warning("product_cli_not_installed", prefix=prefix, module=module_path, error=str(exc))
+        return
+    app = getattr(module, "app", None)
+    if app is None:
+        logger.warning("product_cli_missing_app", prefix=prefix, module=module_path)
+        return
+    registry.register_cli_app(app, prefix=prefix)
