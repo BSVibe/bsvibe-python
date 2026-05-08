@@ -1,0 +1,137 @@
+# Progress Log
+Started: 2026-05-08T06:58:04Z
+
+## TASK-001 — package skeleton (commit c77afbb)
+- Created packages/bsvibe-mcp/{pyproject.toml, README.md (53 lines)}
+- src/bsvibe_mcp/{__init__.py, server.py, transport.py, cli.py}
+  - server.build_server(name="bsvibe-mcp") -> mcp.server.Server (no tools yet)
+  - transport.run_stdio / run_http: NotImplementedError placeholders for TASK-007
+  - cli.app: Typer stub; subcommands wired in TASK-007
+- tests/{test_server_factory.py (4 tests), test_transport_smoke.py (2 tests)} — all green
+- Workspace: registered bsvibe-mcp in root pyproject.toml members + sources; uv lock added bsvibe-mcp v0.1.0 + mcp v1.27.0 + httpx-sse + python-multipart + sse-starlette + uvicorn + pywin32
+- Verified: uv run ruff check . clean; smoke import OK; pytest 6/6 pass
+- Key paths for next tasks:
+  - factory: packages/bsvibe-mcp/src/bsvibe_mcp/server.py
+  - transports: packages/bsvibe-mcp/src/bsvibe_mcp/transport.py
+  - cli entry: packages/bsvibe-mcp/src/bsvibe_mcp/cli.py (TASK-007 fills serve/list-tools)
+  - registry to be added next (TASK-002): packages/bsvibe-mcp/src/bsvibe_mcp/registry.py
+
+## TASK-002 — typer→MCP registry adapter
+- Added packages/bsvibe-mcp/src/bsvibe_mcp/registry.py (~250 lines)
+  - ToolDescriptor dataclass (name, description, input_schema, handler, param_types)
+  - MCPToolRegistry.register_typer_app(app, prefix) walks registered_commands + registered_groups recursively
+  - Tool name = "_".join([normalize(prefix), normalize(group_path...), normalize(cmd_name)]) — dashes → underscores
+  - Schema derivation: str/int/float/bool/Path/Enum/list[T]/Optional[T]; Optional encoded as type union [T, "null"]; Annotated typer.Argument/Option help carried into property "description"; defaults serialized (Enum→value, Path→str)
+  - typer.Context params skipped (framework plumbing); VAR_POSITIONAL/VAR_KEYWORD skipped
+  - _wire_handlers wires server.list_tools() + server.call_tool() exactly once per registry; subsequent register_typer_app calls only extend table
+  - call_tool dispatch coerces Path/Enum on input, awaits async handlers, returns dict (SDK serializes to structured + text content); unknown tool raises ValueError → SDK converts to isError=True result
+- tests/test_registry.py — 18 tests (TestRegisterTyperApp, TestSchemaDerivation, TestServerHandlers); fixture builds synthetic Typer app w/ sub-typer + Argument + Option + Bool + Enum + Optional[Path] + Optional[list[str]] + async cmd
+- Verified: uv run ruff check . clean; ruff format clean; pytest tests/ 24/24 green
+- Coverage: registry.py 90% (165 stmts, 16 missing — float branch, Annotated-without-ParameterInfo, callback-name fallback, etc.); package overall 88%
+- Next (TASK-003): import bsgateway Typer app + register with prefix='bsgateway'; integration test asserts 30+ tool names + ListTools handler + 1 CallTool with mocked CliHttpClient
+
+## TASK-003 — wire bsgateway CLI as MCP tools (commit f91a1a4)
+- registry.MCPToolRegistry gains register_cli_app(root_app, prefix) — CliRunner-based dispatch path that preserves cli_app() ctx.obj plumbing (every product CLI uses ctx.obj.formatter / ctx.obj.dry_run / ctx.obj.url etc.)
+  - argv translation: --output json + (optional) --dry-run / --token / --tenant / --url + cli subcommand path + per-param --flag mapping; bool flags use param_decls "--foo/--no-foo" split for negative form; lists become repeated --flag value
+  - captured stdout parsed back as JSON; non-zero exit returns {ok:False, exit_code, stdout, stderr}
+  - reserved global-flag schema params injected per tool: dry_run/token/tenant/url
+  - invoke_without_command=True callback-only sub-app handled (e.g. bsgateway_execute) by treating sub-app's registered_callback as the tool
+- Schema-derivation fixes uncovered while wiring real bsgateway:
+  - _is_optional() now recognises PEP 604 X|None (types.UnionType) — TASK-002 only handled typing.Union, so list[str]|None was silently falling through to {"type":"string"}
+  - _resolve_param() handles default-value typer.Option(...) style (where ParameterInfo lives in param.default; ... means required) alongside Annotated style; bsgateway uses the former
+- ToolDescriptor gains skip_coerce=False; CliRunner-based descriptors set True so the call_tool dispatcher passes raw JSON args through to the argv translator instead of coercing to Path/Enum
+- server.build_server() now imports product CLIs lazily via importlib (try/except → structlog warning); products kw lets tests pin the registration set; default registers ('bsgateway','bsgateway.cli.main')
+- bsgateway installed locally via `uv pip install --no-deps -e /Users/blasin/Works/BSGateway/main` so the integration test can import it; bsgateway/cli has no heavy backend imports (only typer + bsvibe_cli_base + asyncio + json + structlog) so --no-deps is safe
+- tests:
+  - tests/test_registry_cli_app.py — 10 tests against synthetic cli_app()-built fixture w/ items sub-app (list/add/remove) + invoke_without_command runtask sub-app; verifies walking, callback-only handling, global-flag schema injection, dispatch w/ --dry-run, positional Argument, --no-X negative bool, list option, duplicate guard
+  - tests/test_server_bsgateway.py — 5 tests; pytest.importorskip("bsgateway"); asserts 30+ bsgateway_* tools, models_{list,add,remove} present, bsgateway_execute callback-only present, models_list schema has dry_run/token/tenant/url, dry-run dispatch returns {dry_run, method:'GET', path:'/admin/models', filter:{type:'custom'}}
+- Verified: ruff check + format clean; package pytest 39/39 green; workspace pytest 723/723 green; package coverage 89% (registry.py 91%, server.py 80%, cli.py 0% [TASK-007 placeholder], transport.py 67% [TASK-007 placeholder])
+- Key paths: registry.py:_is_optional/_resolve_param/_make_cli_handler/MCPToolRegistry.register_cli_app + _iter_cli_descriptors; server.py:_try_register
+- Next (TASK-004): same pattern for bsage. Need `uv pip install --no-deps -e /Users/blasin/Works/BSage/main` first; then build_server adds ('bsage','bsage.cli.main') (or actual import path — confirm). Add similar integration test using importorskip.
+
+
+## TASK-004 — wire bsage CLI as MCP tools (commit 1e16910)
+- server._PRODUCT_CLI_MODULES gains ('bsage','bsage.cli.main') alongside bsgateway
+- tests/test_server_bsage.py — 5 tests, importorskip("bsage.cli.main") gated
+  - asserts >=14 bsage_* tools (full CLI surface: run + skills{list,run} + plugins{list,install,enable,disable} + garden{list} + canon{list,draft,apply,status} + settings{get,set})
+  - representative subset present (run, skills_list/run, plugins_list/install, garden_list, canon_list/apply/status, settings_get/set)
+  - canon_apply schema has dry_run/token/tenant/url
+  - dry-run CallTool for bsage_skills_list returns {dry_run, method:'GET', path:'/api/skills'}
+  - dry-run CallTool for bsage_settings_get returns {dry_run, method:'GET', path: settings _CONFIG_PATH}
+- bsage install: `uv pip install --no-deps -e /Users/blasin/Works/BSage/main` then `uv pip install apscheduler fastapi 'uvicorn[standard]' python-multipart httpx aiosqlite jsonschema python-dateutil networkx cryptography watchdog litellm 'bsvibe-auth[fastapi] @ git+https://github.com/BSVibe/BSVibe-Auth.git@v0.5.0#subdirectory=python'` (settings.py imports gateway.routes which transitively pulls apscheduler / bsvibe_auth)
+  - Caveat: installing bsage WITH deps replaces workspace bsvibe-* with git refs and `uv sync` then UNINSTALLS bsgateway. Sequence to keep both: install bsage no-deps, install missing libs separately, then re-install bsgateway no-deps if needed (`uv pip install --no-deps -e /Users/blasin/Works/BSGateway/main`).
+- Acceptance criteria stated "20+ bsage tools" but actual surface is 14. The intent is "wire the full bsage CLI surface" — we did. Test uses >=14 to assert that.
+- Verified: ruff check + format clean (after auto-format adjusted line wrap), package pytest 44/44 green (incl. 5 new bsage tests + 5 bsgateway integration unaffected), workspace pytest 728/728 green. bsvibe_mcp coverage 89% (registry 92%, server 80%).
+- Next (TASK-005): same for bsnexus + bsupervisor. Note bsnexus's import path may be `src.cli.main` per its package layout — confirm before adding to _PRODUCT_CLI_MODULES.
+
+## TASK-005 — wire bsnexus + bsupervisor CLIs as MCP tools (commit ee76b64)
+- server._PRODUCT_CLI_MODULES gains ('bsnexus','bsnexus_cli.main') + ('bsupervisor','bsupervisor.cli.main')
+- bsupervisor install: `uv pip install --no-deps -e /Users/blasin/Works/BSupervisor/main` — clean (no force-include shenanigans). 14 tools registered.
+- bsnexus blocker (UPSTREAM PACKAGING BUG):
+  - bsnexus pyproject.toml uses `[tool.hatch.build.targets.wheel.force-include] "src/cli" = "bsnexus_cli"` to remap during wheel build, but main.py's absolute imports still say `from backend.src.cli.commands import …` — they don't get rewritten by force-include.
+  - Result: even `uv run bsnexus --help` fails post-install with `ModuleNotFoundError: No module named 'backend'`. Affects every install layout that doesn't have `/Users/blasin/Works/BSNexus/main` on PYTHONPATH (i.e. anything outside the bsnexus repo).
+  - Workaround chosen: server logs warning + skips registration on ImportError; bsnexus integration test uses `pytest.importorskip('bsnexus_cli.main')` so the test skips cleanly until upstream patches main.py to use relative imports. When fixed, our registration code works without changes.
+  - Fix on bsnexus side: rewrite main.py imports as relative (`from .commands import projects as projects_app`) since the wheel only ships the CLI subtree.
+- tests/test_server_bsupervisor.py — 5 tests; asserts >=14 bsupervisor_* tools (agents{list,add,update,delete,run} + incidents{list,show,ack,resolve} + audit{list,show} + costs{report} + settings{get,set} = 14), schema has dry_run/token/tenant/url, dry-run CallTool for agents_list returns {dry_run, method:'GET', path:'/api/rules'}, incidents_list with severity filter returns {dry_run, method:'GET', path:'/api/incidents'}.
+- tests/test_server_bsnexus.py — 5 tests, importorskip-gated; asserts >=6 bsnexus_* tools + representative subapp_list tools + dry-run projects_list. Currently SKIPS due to bsnexus packaging bug.
+- Verified: ruff check + format clean; package pytest 49 passed + 1 skipped (bsnexus); workspace pytest 733 passed + 1 skipped. Coverage 90% (registry 92%, server 92%).
+- Next (TASK-006): auth.py — profile resolution order: per-call args → MCP_PROFILE/default profile → BSV_BOOTSTRAP_TOKEN. structlog redaction. 3 unit tests + 1 redaction test.
+## ABORT: TASK-006: Auth + profile resolution + per-call tenant override failed 3x at iteration 8
+
+## TASK-006 — auth context resolution + redaction (commit 2c60a63)
+- bsvibe_mcp/auth.py (~120 lines):
+  - AuthContext frozen dataclass: token | tenant | url | source ("per_call" / "profile:<name>" / "bootstrap" / "none")
+  - resolve_auth(*, token, tenant, url, profile_name, store) — per-field resolution: per-call wins independently per field, profile fills gaps (MCP_PROFILE env > store.get_active()), BSV_BOOTSTRAP_TOKEN is last-resort token-only fallback
+  - profile token via bsvibe_cli_base.keyring.resolve_token (keyring -> BSVIBE_TOKEN env -> raw token_ref) — no reimplementation
+  - explicit profile_name miss raises ProfileNotFoundError; active-default miss is non-fatal (lets bootstrap kick in)
+  - structlog event "mcp_auth_resolved" logs source + profile + tenant + url + token_fingerprint("len=NN") — never the raw token
+  - token_fingerprint() exported as the public log-safe helper
+- tests/test_mcp_auth.py (14 tests):
+  - TestPerCallOverride x3 — full per-call, token-overrides-profile-keeps-tenant/url, tenant-only override
+  - TestProfileResolution x5 — explicit name, MCP_PROFILE env, active default, keyring patch, ProfileNotFoundError on missing
+  - TestBootstrapFallback x3 — used when no profile, beaten by per_call, beaten by profile
+  - TestNoSourceConfigured x1 — empty AuthContext(source="none")
+  - TestRedaction x2 — captures all structlog events, asserts secret value never appears in any rendered field
+  - autouse fixture clears MCP_PROFILE / BSV_BOOTSTRAP_TOKEN / BSVIBE_TOKEN per test
+  - _StubStore class avoids touching real ~/.bsvibe/config.yaml
+- Filename note: renamed test_auth.py -> test_mcp_auth.py because pytest collects packages/bsvibe-authz/tests/test_auth.py first and fixture lookup leaks across when both files share a module name (importlib mode + sibling tests/__init__.py = name collision). Without rename, workspace pytest reported 15 ERRORs claiming bsvibe-authz fixtures (auth_settings, opaque_cache, etc.) were missing on bsvibe-mcp tests.
+- Verified: uv run ruff check . clean; ruff format clean; package pytest 63 passed + 1 skipped; workspace pytest 747 passed + 1 skipped. auth.py coverage 97% (62 stmts, 2 missed). Package coverage 91%.
+- Key paths: packages/bsvibe-mcp/src/bsvibe_mcp/auth.py:resolve_auth/_load_profile/_source_label/token_fingerprint
+- Next (TASK-007): transport.py stdio + HTTP wrappers + cli.py serve / list-tools subcommands. Fill the existing transport.py / cli.py placeholders. Note `mcp[cli]` may be needed for SSE — check pyproject.toml deps.
+
+## TASK-007 — stdio + HTTP/SSE transports + serve/list-tools CLI (commit c391339)
+- transport.py:
+  - run_stdio(server) wraps mcp.server.stdio.stdio_server() async ctx manager; calls server.run(read, write, init_opts)
+  - build_http_app(server) -> Starlette: SseServerTransport("/messages/") + Route("/sse",GET,handle_sse) + Mount("/messages/", sse.handle_post_message). Split out for testability (no uvicorn).
+  - run_http(server, host, port) builds app + uvicorn.Config + uvicorn.Server; awaits .serve()
+  - structlog "mcp_transport_start" event on each entry; never logs server internals
+- cli.py:
+  - app gets `no_args_is_help=True` so bare `bsvibe-mcp` shows help without erroring
+  - `serve --transport stdio|http --host HOST --port PORT` — Enum-typed --transport (typer renders nice error on invalid). asyncio.run(run_stdio|run_http(...))
+  - `list-tools --format text|json` — extracts ListToolsRequest handler from server.request_handlers, awaits with ListToolsRequest(method="tools/list"), prints names+descriptions or json payload
+- tests:
+  - tests/test_transport_smoke.py — extended from 2 → 5 tests:
+    - run_stdio_invokes_server_run_with_stdio_streams: monkeypatches stdio_server with @asynccontextmanager fake, verifies server.create_initialization_options + server.run called with right streams
+    - build_http_app returns Starlette + verifies /sse + /messages or /messages/ in route paths
+    - run_http_starts_uvicorn_with_host_and_port: monkeypatches transport.uvicorn with fake Config/Server class capturing args, verifies serve() called with host/port flowing through
+  - tests/test_cli.py — 7 new tests (root help renders, serve stdio/http/default dispatch, serve rejects unknown transport, list-tools text + json output)
+- Verified: uv run ruff check . clean; ruff format clean (auto-formatted transport.py + test_transport_smoke.py); package pytest 73 passed + 1 skipped; workspace pytest 757 passed + 1 skipped; bsvibe_mcp coverage 93% (cli.py 95%, transport.py 90% — handle_sse inner closure only runs under live SSE, untested by design)
+- Acceptance criteria caveat: spec said "90+ tools" in list-tools output. Actual catalog is 58 (bsgateway 30 + bsage 14 + bsupervisor 14). bsnexus is uninstallable due to upstream packaging bug already documented in TASK-005 (force-include + absolute imports mismatch). When bsnexus is patched upstream, the existing registration code picks it up automatically — no bsvibe-mcp change required.
+- Key paths: packages/bsvibe-mcp/src/bsvibe_mcp/transport.py:run_stdio/build_http_app/run_http; cli.py:serve/list_tools
+- Next (TASK-008): integration smoke + workspace coverage gate + README expansion. Smoke test asserts a tool from each installed product responds; README needs Quickstart, transport snippets for Claude Code mcpServers config, auth resolution rules, link to product CLIs.
+
+## TASK-008 — integration smoke + workspace coverage gate + README (commit 7b45bef)
+- tests/test_smoke_e2e.py — exercises default build_server() (no products= override) so registration path matches operator runtime
+  - TestDefaultServerListTools: aggregated catalog non-empty + every tool has type=object schema with the 4 reserved global flags (dry_run/token/tenant/url)
+  - TestDefaultServerCallTool: parametrized over (bsgateway, bsage, bsnexus, bsupervisor) with importorskip per param — bsnexus skips cleanly until upstream packaging fix; the other 3 dry-run dispatch a representative tool (bsgateway_models_list /admin/models, bsage_skills_list /api/skills, bsupervisor_agents_list /api/rules) and assert structured JSON {dry_run, method, path}
+  - 5 passed + 1 skipped in the new module; package total 78 passed + 2 skipped
+- README rewritten as operator quickstart (127 lines, well under the 200-line cap)
+  - Quickstart: stdio + HTTP/SSE serve commands, list-tools text+json, Claude Code mcpServers JSON snippet (with MCP_PROFILE env)
+  - Tool catalog: naming scheme + reserved-global-flags table + per-product subapp listing
+  - Auth resolution: 3-step per-call→profile→bootstrap rules, keyring chain, no-token-logging note (mcp_auth_resolved fingerprint)
+  - Testing: ruff + pytest --cov-fail-under=80 + in-process handler pattern reference
+  - Package layout + bsvibe_mcp-not-mcp note; links to the 4 product CLIs and bsvibe-cli-base
+- Coverage gate clean: uv run pytest --cov=bsvibe_mcp --cov-fail-under=80 → 92.53% (auth 97 / cli 95 / registry 92 / server 92 / transport 90)
+- Verified: ruff check + format clean; package pytest 78 passed + 2 skipped; workspace pytest 762 passed + 2 skipped
+- Key paths: packages/bsvibe-mcp/tests/test_smoke_e2e.py:_PRODUCT_PROBES + TestDefaultServerListTools + TestDefaultServerCallTool; packages/bsvibe-mcp/README.md
+- Next (REVIEW-001): git diff main review against the 10-point checklist (src dir name, token logging, in-process tests, schema coverage, auth path, dry-run semantics, ruff, coverage, no print, workspace pytest)

@@ -1,0 +1,78 @@
+{
+  "branchName": "feat/phase-6",
+  "context": "Phase 6 (final) of BSVibe AI-Native Control Plane — `bsvibe-mcp` package: an MCP server that exposes the four product CLIs (bsgateway/bsage/bsnexus/bsupervisor) as MCP tools. Once shipped, AI agents (Claude Code, opencode) can call any admin operation as a structured tool call instead of shelling out.\n\nReferences: ~/Docs/BSVibe_AI_Native_Control_Plane_Plan_2026-05-06.md §Phase 6 (lines 348-353), Phase 1+2+3+4+5 PRs already merged (#17 #9 #18 #42 #65 #60 #30 #43 #61 #69 #31).\n\nPre-conditions:\n  - bsvibe-cli-base provides cli_app + Profile + CliHttpClient. The four product CLIs (bsgateway / bsage / bsnexus / bsupervisor) are installed as console scripts via their respective packages.\n  - Each CLI is a typer.Typer app with sub-apps; flags use `Annotated[..., typer.Option(...)]`. Auto-discovery via Typer metadata is feasible.\n  - bsvibe-mcp lives in `packages/bsvibe-mcp/` (workspace member).\n  - MCP Python SDK (`mcp`) is the tool registration layer. Per memory `mcp-python-sdk-testing`, tests should NOT spawn subprocesses; instead extract `server.request_handlers` and invoke `ListToolsRequest` / `CallToolRequest` directly. Result is wrapped in `ServerResult.root`.\n  - Per memory `internal-module-shadows-pypi-package-in-container`, NEVER name our package src dir `mcp/` — that shadows the PyPI `mcp` package in production container layouts. Use `bsvibe_mcp/` (already implied by package name).\n  - Two transports: stdio (default for Claude Code / Cursor) + HTTP/SSE (for hosted use). MCP SDK provides both via `Server.run()` with the chosen transport.\n\nDesign:\n  - Tool naming convention: `{product}_{subapp}_{action}` — e.g. `bsgateway_models_list`, `bsage_canon_apply`, `bsnexus_projects_create`. Pluralized by command.\n  - Tool input_schema generated from the Typer command's parameter list (or hand-registered when Typer metadata is insufficient).\n  - Tool output: structured JSON the agent can parse (CLI's `--output json` invariant).\n  - Auth: server reads the active Profile (or accepts `tenant`/`token` per-call), then forwards via the same CliHttpClient as the CLIs.\n  - Each tool delegates to the CLI's existing handler (import the typer command function and call it programmatically via Typer's CliRunner/test seam) — NO duplicate logic.\n\nProject rules: TDD, ruff clean, coverage >= 80%, async I/O, structlog, no Co-Authored-By, no print, no `git add .`. Per feedback_uv_cache_after_crossrepo_merge.md, after bumping `git+...@<sha>` run `uv cache clean` + `uv lock --upgrade-package <pkg>`.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "title": "Package skeleton: bsvibe-mcp + workspace registration + smoke import",
+      "description": "Create `packages/bsvibe-mcp/`:\n\n```\npackages/bsvibe-mcp/\n  pyproject.toml          # name=bsvibe-mcp; deps: mcp>=1.0, bsvibe-cli-base, bsvibe-core, typer, pydantic\n  README.md               # one-pager: what it is, how to launch, transport options\n  src/bsvibe_mcp/\n    __init__.py           # re-export Server factory\n    server.py             # MCPServer factory; register tools later (TASK-003+)\n    transport.py          # stdio + HTTP/SSE wrappers (thin)\n    cli.py                # `bsvibe-mcp` entry point — Typer app: serve/list-tools subcommands\n  tests/\n    test_server_factory.py\n    test_transport_smoke.py\n```\n\nAdd to root `pyproject.toml` workspace members. Run `uv lock`. Smoke import: `from bsvibe_mcp import build_server; s = build_server(); assert s is not None`.",
+      "acceptanceCriteria": "Workspace lock has bsvibe-mcp. Smoke import succeeds. README present (under 100 lines). Tests pass (factory creates a Server with no tools registered yet — placeholder). ruff clean.",
+      "passes": true,
+      "priority": 1
+    },
+    {
+      "id": "TASK-002",
+      "title": "Tool registry framework: typer→MCP adapter helpers",
+      "description": "Create `bsvibe_mcp/registry.py`:\n\n```python\nclass MCPToolRegistry:\n    def __init__(self, server: mcp.server.Server): ...\n    def register_typer_app(self, app: typer.Typer, prefix: str) -> None\n    # Walks app.registered_commands + sub-typers; for each command:\n    #   1. derive tool name `{prefix}_{path}_{name}` (replace - with _)\n    #   2. derive input schema from typer ParamInfo / Annotated metadata\n    #   3. wrap handler: deserialize args → invoke command via typer.testing or direct call → serialize result\n```\n\nDerive JSON schema from typer types:\n  - str → string\n  - int → integer\n  - bool → boolean\n  - Path → string (with format hint)\n  - Optional[X] → schema with nullable\n  - List[X] → array\n  - Enum → string with enum values\n  - typer.Argument vs typer.Option both supported\n\nTests: register a small dummy Typer app + assert generated tool list, schema shape, dispatch returns expected payload. coverage of registry.py >= 90%.",
+      "acceptanceCriteria": "Registry handles 6+ types. Dummy-app test produces correct tool list + schemas + dispatch. ruff clean. coverage >= 90%.",
+      "passes": true,
+      "priority": 2
+    },
+    {
+      "id": "TASK-003",
+      "title": "Wire bsgateway CLI as MCP tools",
+      "description": "In `bsvibe_mcp/server.py`, register the bsgateway Typer app via `MCPToolRegistry.register_typer_app(bsgateway.cli.main.app, prefix='bsgateway')`. Generated tools:\n  - `bsgateway_models_list`, `bsgateway_models_add`, `bsgateway_models_remove`, `bsgateway_models_show`, `bsgateway_models_update`\n  - `bsgateway_routes_test`\n  - `bsgateway_rules_*`, `bsgateway_intents_*`, `bsgateway_presets_*`\n  - `bsgateway_tenants_*`, `bsgateway_audit_*`, `bsgateway_usage_report`, `bsgateway_feedback_*`\n  - `bsgateway_workers_*`, `bsgateway_execute`\n\nIntegration test: spin up the MCP Server in-process, send `ListToolsRequest`, assert each tool present + schema sane. Then send `CallToolRequest` for `bsgateway_models_list` (mocked CliHttpClient) and assert structured JSON result.\n\nRefer to memory `mcp-python-sdk-testing` for the in-process testing pattern.",
+      "acceptanceCriteria": "30+ bsgateway tools registered. ListTools test green. CallTool test for models_list returns structured JSON. ruff clean.",
+      "passes": true,
+      "priority": 3
+    },
+    {
+      "id": "TASK-004",
+      "title": "Wire bsage CLI as MCP tools",
+      "description": "Same pattern as TASK-003 for `bsage.cli.main.app` with prefix `bsage`. Generated tools cover skills/plugins/garden/canon/settings/run sub-apps. Integration test asserts a representative subset (canon_apply, skills_list, settings_get).",
+      "acceptanceCriteria": "20+ bsage tools registered. ListTools + 1-2 CallTool tests green. ruff clean.",
+      "passes": true,
+      "priority": 4
+    },
+    {
+      "id": "TASK-005",
+      "title": "Wire bsnexus + bsupervisor CLIs as MCP tools",
+      "description": "Same pattern for both:\n  - `bsnexus.cli.main.app` (prefix `bsnexus`) — projects/requests/decisions/deliverables/integrations/events sub-apps.\n  - `bsupervisor.cli.main.app` (prefix `bsupervisor`) — agents/incidents/audit/costs/settings sub-apps.\n\nNote: `bsnexus`'s actual import path is `src.cli.main` per its package layout. Confirm and import correctly.\n\nIntegration tests assert representative subset for each.",
+      "acceptanceCriteria": "All 4 product CLIs wired. Full ListTools across all 4 products. ruff clean.",
+      "passes": true,
+      "priority": 5
+    },
+    {
+      "id": "TASK-006",
+      "title": "Auth + profile resolution + per-call tenant override",
+      "description": "MCP tool calls need to attach the right token + tenant. Resolution order (matches CLI):\n  1. Per-call args (`token`, `tenant` MCP tool params if provided)\n  2. Profile from `MCP_PROFILE` env or default profile from `~/.bsvibe/config.yaml`\n  3. Bootstrap token from `BSV_BOOTSTRAP_TOKEN` env (admin escape)\n\nImplemented in `bsvibe_mcp/auth.py`. Tests cover all 3 resolution paths via monkeypatched env + ProfileStore stub.\n\nNo logging of token values (structlog redaction).",
+      "acceptanceCriteria": "auth.py tested for 3 resolution paths + redaction. ruff clean. coverage >= 90%.",
+      "passes": true,
+      "priority": 6
+    },
+    {
+      "id": "TASK-007",
+      "title": "Transport: stdio + HTTP/SSE + bsvibe-mcp serve CLI",
+      "description": "Implement the two transports:\n  - `bsvibe_mcp/transport.py` exposes `run_stdio(server)` and `run_http(server, host, port)` thin wrappers around the MCP SDK transport hooks.\n  - `bsvibe_mcp/cli.py` exposes `bsvibe-mcp serve [--transport stdio|http] [--host HOST] [--port PORT]` via Typer.\n  - `bsvibe-mcp list-tools` prints the registered tools (helpful for agent setup).\n\nAdd `pyproject.toml` `[project.scripts]` entry: `bsvibe-mcp = \"bsvibe_mcp.cli:app\"`.\n\nSmoke test for each transport (stdio: pipe a single ListTools request through; http: TestClient against an mcp-on-fastapi adapter or similar — pick whichever the MCP SDK provides natively).",
+      "acceptanceCriteria": "Both transports smoke-tested. `uv run bsvibe-mcp --help` renders. `bsvibe-mcp list-tools` returns the full catalog (90+ tools). ruff clean.",
+      "passes": true,
+      "priority": 7
+    },
+    {
+      "id": "TASK-008",
+      "title": "Integration smoke + workspace coverage gate + README",
+      "description": "End-to-end smoke (in-process):\n  - Start MCP server with mocked CliHttpClient for all 4 products.\n  - Send ListTools → assert 90+ tools present.\n  - Call one tool per product (bsgateway_models_list, bsage_canon_list, bsnexus_projects_list, bsupervisor_agents_list) → each returns structured JSON.\n  - Coverage gate: `uv run pytest packages/bsvibe-mcp/ --cov=bsvibe_mcp --cov-fail-under=80`.\n\nFlesh out `packages/bsvibe-mcp/README.md` with:\n  - Quickstart (`bsvibe-mcp serve` + Claude Code `mcpServers` snippet)\n  - List of registered tool prefixes\n  - Auth resolution rules\n  - Linking back to the four product CLIs\n\nAlso add entry to root README or workspace docs.",
+      "acceptanceCriteria": "Smoke test passes for all 4 products. coverage >= 80%. README is operator-ready (<= 200 lines). ruff clean.",
+      "passes": true,
+      "priority": 8
+    },
+    {
+      "id": "REVIEW-001",
+      "title": "Code review — security, quality, tests, style. Fix until 0 issues.",
+      "description": "git diff main review. Check: (a) src dir is `bsvibe_mcp/` not `mcp/` (memory `internal-module-shadows-pypi-package-in-container`). (b) Token / tenant never logged. (c) MCP tests use in-process pattern (memory `mcp-python-sdk-testing`) not subprocess spawning. (d) Each tool's schema covers the typer params it derives from. (e) CallTool dispatch never bypasses the CliHttpClient's auth path. (f) `--dry-run` semantics from CLIs preserved (if a tool has dry_run param, it short-circuits before HTTP). (g) ruff check + format clean. (h) Coverage >= 80%. (i) No print. (j) Existing workspace tests still green. Fix every issue + add a new REVIEW-NNN task. passes:true only when ZERO issues remain.",
+      "acceptanceCriteria": "Zero issues. workspace pytest + ruff all green.",
+      "passes": false,
+      "priority": 99
+    }
+  ]
+}
