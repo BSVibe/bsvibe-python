@@ -45,3 +45,6 @@ coverage.xml
 # Local agent / MCP / Claude Code config
 .claude/
 .mcp.json
+
+# Ralph Loop orchestration metadata (.agent/tasks.json, PROMPT.md, progress.txt, loop.log)
+.agent/
