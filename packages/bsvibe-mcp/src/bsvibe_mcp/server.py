@@ -29,7 +29,10 @@ logger = structlog.get_logger(__name__)
 DEFAULT_SERVER_NAME = "bsvibe-mcp"
 
 # (prefix, dotted import path of the root Typer app)
-_PRODUCT_CLI_MODULES: tuple[tuple[str, str], ...] = (("bsgateway", "bsgateway.cli.main"),)
+_PRODUCT_CLI_MODULES: tuple[tuple[str, str], ...] = (
+    ("bsgateway", "bsgateway.cli.main"),
+    ("bsage", "bsage.cli.main"),
+)
 
 
 def build_server(
