@@ -330,6 +330,82 @@ def test_dispatch_jwt_token(deps_settings, make_user_jwt) -> None:
         assert resp.json()["id"] == "u-1"
 
 
+# ---- PAT JWT introspection fallback ----------------------------------------
+#
+# Device-grant PATs are signed JWTs (HS256 + SERVICE_TOKEN_SIGNING_SECRET,
+# not USER_JWT_SECRET) so they fail `verify_user_jwt`. The introspection
+# endpoint accepts them by jti — the dispatcher falls back through
+# introspection when user_jwt verification fails.
+
+
+def test_dispatch_pat_jwt_falls_back_to_introspection(opaque_settings) -> None:
+    """JWT not signed with user_jwt_secret → introspection picks it up."""
+    fake = _FakeIntrospectionClient(
+        IntrospectionResponse(
+            active=True,
+            sub="user-pat",
+            tenant="t-1",
+            scope=["gateway:models:read"],
+        ),
+    )
+    app = _build_dispatch_app(opaque_settings, fake_client=fake)
+    # JWT-shaped token signed with the wrong secret — verify_user_jwt rejects,
+    # introspection accepts.
+    import jwt as _jwt
+
+    bogus_pat = _jwt.encode(
+        {"sub": "user-pat", "exp": 9_999_999_999, "token_type": "pat"},
+        "different-signing-secret",
+        algorithm="HS256",
+    )
+    with TestClient(app) as client:
+        resp = client.get("/me", headers=_bearer(bogus_pat))
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["id"] == "user-pat"
+        assert fake.calls == [bogus_pat]
+
+
+def test_dispatch_pat_jwt_inactive_returns_401(opaque_settings) -> None:
+    fake = _FakeIntrospectionClient(IntrospectionResponse(active=False))
+    app = _build_dispatch_app(opaque_settings, fake_client=fake)
+    import jwt as _jwt
+
+    bogus_pat = _jwt.encode(
+        {"sub": "x", "exp": 9_999_999_999},
+        "different-signing-secret",
+        algorithm="HS256",
+    )
+    with TestClient(app) as client:
+        resp = client.get("/me", headers=_bearer(bogus_pat))
+        assert resp.status_code == 401
+
+
+def test_dispatch_pat_jwt_no_introspection_client_returns_401(deps_settings) -> None:
+    """JWT fails user_jwt verification; introspection unconfigured → 401."""
+    app = _build_dispatch_app(deps_settings)
+    import jwt as _jwt
+
+    bogus_pat = _jwt.encode(
+        {"sub": "x", "exp": 9_999_999_999},
+        "different-signing-secret",
+        algorithm="HS256",
+    )
+    with TestClient(app) as client:
+        resp = client.get("/me", headers=_bearer(bogus_pat))
+        assert resp.status_code == 401
+
+
+def test_dispatch_non_jwt_garbage_does_not_call_introspection(opaque_settings) -> None:
+    """Random non-JWT strings should not waste an introspection call."""
+    fake = _FakeIntrospectionClient(IntrospectionResponse(active=False))
+    app = _build_dispatch_app(opaque_settings, fake_client=fake)
+    with TestClient(app) as client:
+        resp = client.get("/me", headers=_bearer("not-a-jwt"))
+        assert resp.status_code == 401
+        assert fake.calls == []
+
+
 # ---- require_scope ---------------------------------------------------------
 
 

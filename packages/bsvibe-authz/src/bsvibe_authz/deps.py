@@ -42,6 +42,17 @@ from .types import ServiceAudience, ServiceTokenPayload, User
 BOOTSTRAP_TOKEN_PREFIX = "bsv_admin_"
 OPAQUE_TOKEN_PREFIX = "bsv_sk_"
 
+
+def _looks_like_jwt(token: str) -> bool:
+    """Cheap structural check: three base64url segments separated by dots.
+
+    Only used to gate the introspection fallback so a stray garbage string
+    doesn't trigger a network round-trip to the auth server.
+    """
+    parts = token.split(".")
+    return len(parts) == 3 and all(p for p in parts)
+
+
 _bearer_scheme = HTTPBearer(auto_error=False)
 
 
@@ -205,7 +216,16 @@ async def get_current_user(
             return verify_bootstrap_token(token, settings)
         if token.startswith(OPAQUE_TOKEN_PREFIX) and introspection_client is not None:
             return await verify_opaque_token(token, introspection_client, introspection_cache)
-        payload = verify_user_jwt(token, settings)
+        try:
+            payload = verify_user_jwt(token, settings)
+        except AuthError:
+            # PAT JWTs from the device-authorization grant are signed with
+            # SERVICE_TOKEN_SIGNING_SECRET (not USER_JWT_SECRET), so they fail
+            # `verify_user_jwt`. The /api/tokens/introspect endpoint accepts
+            # them by jti — fall through when introspection is configured.
+            if introspection_client is not None and _looks_like_jwt(token):
+                return await verify_opaque_token(token, introspection_client, introspection_cache)
+            raise
     except AuthError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
