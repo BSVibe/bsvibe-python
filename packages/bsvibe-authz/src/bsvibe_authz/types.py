@@ -86,6 +86,10 @@ class IntrospectionResponse(BaseModel):
 
     An inactive token MAY consist solely of ``{"active": false}`` per §2.2,
     so all other fields are optional.
+
+    ``scope`` is normalized to a list. Per RFC 7662 §2.2 the wire format is a
+    space-delimited string; some issuers send a list directly, so accept
+    both shapes.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -98,6 +102,13 @@ class IntrospectionResponse(BaseModel):
     exp: int | None = None
     client_id: str | None = None
     username: str | None = None
+
+    @field_validator("scope", mode="before")
+    @classmethod
+    def _split_scope_string(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.split() if value else []
+        return value
 
 
 class ServiceTokenPayload(BaseModel):

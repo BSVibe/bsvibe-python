@@ -164,3 +164,26 @@ def test_introspection_response_ignores_unknown_fields() -> None:
 
     r = IntrospectionResponse.model_validate({"active": True, "unknown_extension": "x"})
     assert r.active is True
+
+
+def test_introspection_response_accepts_string_scope() -> None:
+    """RFC 7662 §2.2 — scope is a space-delimited string."""
+    from bsvibe_authz.types import IntrospectionResponse
+
+    r = IntrospectionResponse.model_validate({"active": True, "scope": "gateway:models:read sage:notes:read"})
+    assert r.scope == ["gateway:models:read", "sage:notes:read"]
+
+
+def test_introspection_response_accepts_star_scope_string() -> None:
+    """Bootstrap-style ``*`` scope from BSVibe-Auth introspect endpoint."""
+    from bsvibe_authz.types import IntrospectionResponse
+
+    r = IntrospectionResponse.model_validate({"active": True, "scope": "*"})
+    assert r.scope == ["*"]
+
+
+def test_introspection_response_accepts_empty_string_scope() -> None:
+    from bsvibe_authz.types import IntrospectionResponse
+
+    r = IntrospectionResponse.model_validate({"active": True, "scope": ""})
+    assert r.scope == []
