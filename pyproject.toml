@@ -12,6 +12,7 @@ dependencies = [
     "bsvibe-demo",
     "bsvibe-fastapi",
     "bsvibe-llm",
+    "bsvibe-mcp",
     "bsvibe-sqlalchemy",
 ]
 
@@ -24,6 +25,7 @@ bsvibe-core = { workspace = true }
 bsvibe-demo = { workspace = true }
 bsvibe-fastapi = { workspace = true }
 bsvibe-llm = { workspace = true }
+bsvibe-mcp = { workspace = true }
 bsvibe-sqlalchemy = { workspace = true }
 
 [tool.uv.workspace]
