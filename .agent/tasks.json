@@ -71,7 +71,7 @@
       "title": "Code review — security, quality, tests, style. Fix until 0 issues.",
       "description": "git diff main review. Check: (a) src dir is `bsvibe_mcp/` not `mcp/` (memory `internal-module-shadows-pypi-package-in-container`). (b) Token / tenant never logged. (c) MCP tests use in-process pattern (memory `mcp-python-sdk-testing`) not subprocess spawning. (d) Each tool's schema covers the typer params it derives from. (e) CallTool dispatch never bypasses the CliHttpClient's auth path. (f) `--dry-run` semantics from CLIs preserved (if a tool has dry_run param, it short-circuits before HTTP). (g) ruff check + format clean. (h) Coverage >= 80%. (i) No print. (j) Existing workspace tests still green. Fix every issue + add a new REVIEW-NNN task. passes:true only when ZERO issues remain.",
       "acceptanceCriteria": "Zero issues. workspace pytest + ruff all green.",
-      "passes": false,
+      "passes": true,
       "priority": 99
     }
   ]

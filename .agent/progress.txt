@@ -135,3 +135,16 @@ Started: 2026-05-08T06:58:04Z
 - Verified: ruff check + format clean; package pytest 78 passed + 2 skipped; workspace pytest 762 passed + 2 skipped
 - Key paths: packages/bsvibe-mcp/tests/test_smoke_e2e.py:_PRODUCT_PROBES + TestDefaultServerListTools + TestDefaultServerCallTool; packages/bsvibe-mcp/README.md
 - Next (REVIEW-001): git diff main review against the 10-point checklist (src dir name, token logging, in-process tests, schema coverage, auth path, dry-run semantics, ruff, coverage, no print, workspace pytest)
+
+## REVIEW-001 — code review of git diff main, all criteria pass
+- (a) src dir is `bsvibe_mcp/` (verified `ls packages/bsvibe-mcp/src/` → bsvibe_mcp). No mcp/ shadow risk.
+- (b) Token never logged — auth.py only emits token_fingerprint("len=NN"); raw token never in any structlog event. Test_mcp_auth.py TestRedaction asserts secret value never appears in any rendered field. Tenant logged for debugging (tenant id is not secret per project rules; only authentication tokens fall under "never log secrets").
+- (c) Tests use in-process pattern (memory `mcp-python-sdk-testing`) — `subprocess` only appears in docstring notes ("no subprocess"), never imported/called in test code. All call_tool/list_tools tests extract handlers from server.request_handlers and invoke ListToolsRequest/CallToolRequest objects directly; result wrapped in ServerResult.root.
+- (d) Schemas cover typer params — registry._build_descriptor walks inspect.signature + typing.get_type_hints(include_extras=True), supports str/int/float/bool/Path/Enum/list[T]/Optional[T] in both Annotated and default-value Typer styles. Reserved global flags (dry_run/token/tenant/url) injected via _cli_descriptor.
+- (e) CallTool dispatch routes through CliRunner.invoke(root_app, argv) — root_app is the cli_app()-built Typer with the global root callback that sets up ctx.obj profile/token/tenant/output/dry_run; underlying commands resolve auth via CliHttpClient (with 401-refresh-retry). Never bypasses the CLI auth path.
+- (f) --dry-run preserved — registry._make_cli_handler line 312: `if kwargs.pop("dry_run", False): argv.append("--dry-run")`; the CLI's existing dry_run handler short-circuits before HTTP. Verified end-to-end in test_smoke_e2e.py + per-product integration tests (each calls a tool with dry_run=True and asserts {dry_run, method, path} structured payload, no real HTTP fired).
+- (g) `uv run ruff check .` + `uv run ruff format --check .` clean (18 files already formatted).
+- (h) Coverage 92.53% (auth 97 / cli 95 / registry 92 / server 92 / transport 90), `--cov-fail-under=80` passes.
+- (i) No print() in src/ — only typer.echo (legitimate CLI stdout in cli.py list-tools output) and structlog. Verified via Grep.
+- (j) Workspace pytest 762 passed + 2 skipped (bsnexus probe + bsnexus integration test, blocked on documented upstream packaging bug).
+- Conclusion: ZERO issues. REVIEW-001 passes:true. Phase 6 complete.
