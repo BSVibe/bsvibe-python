@@ -24,6 +24,11 @@ Authentication is identical across commands: a service or user JWT
 passed via ``--token`` (or ``BSVIBE_AUTH_AUDIT_SERVICE_TOKEN`` /
 ``BSVIBE_AUDIT_TOKEN`` env vars) and shipped in the ``X-Service-Token``
 header — matching :class:`bsvibe_audit.client.AuditClient`.
+
+This module migrated from click to Typer. The ``[project.scripts]``
+entry point name (``bsvibe-audit``), every subcommand name, every
+option flag, every environment-variable fallback and every exit code
+remains 100% backwards compatible with the click implementation.
 """
 
 from __future__ import annotations
@@ -38,15 +43,29 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-import click
 import httpx
 import structlog
+import typer
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from bsvibe_audit.client import AuditClient
 from bsvibe_audit.outbox.schema import AuditOutboxRecord
 from bsvibe_audit.outbox.store import OutboxStore
 
 _logger = structlog.get_logger("bsvibe_audit.cli")
+
+_VALID_FORMATS = ("json", "csv", "table")
+
+app = typer.Typer(help="bsvibe-audit operator CLI.", no_args_is_help=True, add_completion=False)
+
+
+def _fail(message: str, *, code: int = 1) -> "typer.Exit":
+    """Print ``message`` to stderr in click-compatible ``Error: ...`` form
+    and return a :class:`typer.Exit` for the caller to ``raise``.
+    """
+
+    typer.echo(f"Error: {message}", err=True)
+    return typer.Exit(code=code)
 
 
 # ---------------------------------------------------------------------------
@@ -61,23 +80,18 @@ def _post_query(
     body: dict[str, Any],
     timeout_s: float = 10.0,
 ) -> dict[str, Any]:
-    """POST to the audit-query endpoint and return the decoded JSON body.
-
-    Raises a :class:`click.ClickException` when the endpoint reports a
-    non-2xx status so the caller never has to translate ``httpx``
-    exceptions back into shell exit codes.
-    """
+    """POST to the audit-query endpoint and return the decoded JSON body."""
 
     headers = {"X-Service-Token": token}
     with httpx.Client(timeout=timeout_s) as http:
         response = http.post(audit_url, json=body, headers=headers)
     if response.status_code >= 400:
         excerpt = response.text[:300]
-        raise click.ClickException(f"audit query failed [{response.status_code}]: {excerpt}")
+        raise _fail(f"audit query failed [{response.status_code}]: {excerpt}")
     try:
         return response.json()
     except ValueError as exc:
-        raise click.ClickException(f"audit query returned non-JSON body: {exc}")
+        raise _fail(f"audit query returned non-JSON body: {exc}")
 
 
 def _iter_events(
@@ -141,48 +155,40 @@ def _format_events(events: list[dict[str, Any]], fmt: str) -> str:
     return "\n".join(lines)
 
 
+def _normalise_format(fmt: str) -> str:
+    """Validate ``--format`` (case-insensitive, matches the legacy click Choice)."""
+
+    lower = fmt.lower()
+    if lower not in _VALID_FORMATS:
+        raise typer.BadParameter(
+            f"invalid choice: {fmt!r}. (choose from {', '.join(_VALID_FORMATS)})",
+            param_hint="'--format'",
+        )
+    return lower
+
+
 # ---------------------------------------------------------------------------
 # query
 # ---------------------------------------------------------------------------
 
 
-@click.group(help="bsvibe-audit operator CLI.")
-def main() -> None:
-    """Entry point. Each subcommand is independently testable."""
-
-
-@main.command("query")
-@click.option("--audit-url", required=True, help="Full URL to POST /api/audit/query.")
-@click.option(
-    "--token",
-    required=True,
-    envvar=["BSVIBE_AUDIT_TOKEN", "BSVIBE_AUTH_AUDIT_SERVICE_TOKEN"],
-    help="Service or user JWT (X-Service-Token header).",
-)
-@click.option("--tenant", "tenant_id", default=None, help="Tenant filter.")
-@click.option("--event-type", default=None, help="Event-type pattern (wildcards allowed).")
-@click.option("--since", default=None, help="ISO timestamp lower bound (inclusive).")
-@click.option("--until", default=None, help="ISO timestamp upper bound (exclusive).")
-@click.option("--limit", type=int, default=100, show_default=True, help="Maximum events to fetch.")
-@click.option(
-    "--format",
-    "fmt",
-    type=click.Choice(["json", "csv", "table"], case_sensitive=False),
-    default="table",
-    show_default=True,
-    help="Output format.",
-)
+@app.command("query", help="Query the BSVibe-Auth audit endpoint with the given filter.")
 def query_cmd(
-    audit_url: str,
-    token: str,
-    tenant_id: str | None,
-    event_type: str | None,
-    since: str | None,
-    until: str | None,
-    limit: int,
-    fmt: str,
+    audit_url: str = typer.Option(..., "--audit-url", help="Full URL to POST /api/audit/query."),
+    token: str = typer.Option(
+        ...,
+        "--token",
+        envvar=["BSVIBE_AUDIT_TOKEN", "BSVIBE_AUTH_AUDIT_SERVICE_TOKEN"],
+        help="Service or user JWT (X-Service-Token header).",
+    ),
+    tenant_id: str | None = typer.Option(None, "--tenant", help="Tenant filter."),
+    event_type: str | None = typer.Option(None, "--event-type", help="Event-type pattern (wildcards allowed)."),
+    since: str | None = typer.Option(None, "--since", help="ISO timestamp lower bound (inclusive)."),
+    until: str | None = typer.Option(None, "--until", help="ISO timestamp upper bound (exclusive)."),
+    limit: int = typer.Option(100, "--limit", help="Maximum events to fetch."),
+    fmt: str = typer.Option("table", "--format", help="Output format (json|csv|table)."),
 ) -> None:
-    """Query the BSVibe-Auth audit endpoint with the given filter."""
+    fmt_lower = _normalise_format(fmt)
 
     body: dict[str, Any] = {"limit": limit}
     if tenant_id is not None:
@@ -196,7 +202,7 @@ def query_cmd(
 
     payload = _post_query(audit_url=audit_url, token=token, body=body)
     events = payload.get("events", []) or []
-    click.echo(_format_events(events, fmt.lower()))
+    typer.echo(_format_events(events, fmt_lower))
 
 
 # ---------------------------------------------------------------------------
@@ -210,13 +216,7 @@ async def _retry_dead_letter(
     client: AuditClient,
     batch_size: int = 50,
 ) -> int:
-    """Re-queue dead-letter rows and ask the audit client to deliver them.
-
-    Returns the number of rows actually delivered. The function clears
-    the ``dead_letter`` flag in batches of ``batch_size`` and then
-    forwards the payloads to :meth:`AuditClient.send`. Failures are
-    propagated so the caller can decide whether to log/exit non-zero.
-    """
+    """Re-queue dead-letter rows and ask the audit client to deliver them."""
 
     store = OutboxStore()
     delivered_total = 0
@@ -228,9 +228,6 @@ async def _retry_dead_letter(
         ids = [row.id for row in rows]
         payloads = [dict(row.payload) for row in rows]
 
-        # Reset the dead-letter flag and retry counter so a subsequent
-        # crash in send() leaves the rows visible to the relay (instead
-        # of stuck in dead-letter forever).
         for row_id in ids:
             record = await session.get(AuditOutboxRecord, row_id)
             if record is None:
@@ -249,16 +246,18 @@ async def _retry_dead_letter(
     return delivered_total
 
 
-@main.command("retry-failed")
-@click.option("--db-url", required=True, help="Async SQLAlchemy URL with the audit_outbox table.")
-@click.option("--audit-url", required=True, help="POST /api/audit/events endpoint.")
-@click.option("--token", required=True, envvar=["BSVIBE_AUTH_AUDIT_SERVICE_TOKEN"], help="Service JWT.")
-@click.option("--batch-size", type=int, default=50, show_default=True)
-def retry_failed_cmd(db_url: str, audit_url: str, token: str, batch_size: int) -> None:
-    """Drain the local outbox of dead-letter rows and retry delivery."""
-
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
+@app.command("retry-failed", help="Drain the local outbox of dead-letter rows and retry delivery.")
+def retry_failed_cmd(
+    db_url: str = typer.Option(..., "--db-url", help="Async SQLAlchemy URL with the audit_outbox table."),
+    audit_url: str = typer.Option(..., "--audit-url", help="POST /api/audit/events endpoint."),
+    token: str = typer.Option(
+        ...,
+        "--token",
+        envvar=["BSVIBE_AUTH_AUDIT_SERVICE_TOKEN"],
+        help="Service JWT.",
+    ),
+    batch_size: int = typer.Option(50, "--batch-size"),
+) -> None:
     engine = create_async_engine(db_url)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     client = AuditClient(audit_url=audit_url, service_token=token)
@@ -272,7 +271,7 @@ def retry_failed_cmd(db_url: str, audit_url: str, token: str, batch_size: int) -
         return delivered
 
     delivered = asyncio.run(_go())
-    click.echo(str(delivered))
+    typer.echo(str(delivered))
 
 
 # ---------------------------------------------------------------------------
@@ -298,12 +297,12 @@ def _export_to_s3(events: Iterator[dict[str, Any]], target: str) -> int:
     bucket = parsed.netloc
     key = parsed.path.lstrip("/")
     if not bucket or not key:
-        raise click.ClickException(f"invalid s3 target: {target}")
+        raise _fail(f"invalid s3 target: {target}")
 
     try:
         import boto3  # type: ignore[import-untyped]
     except ImportError as exc:  # pragma: no cover - optional dep
-        raise click.ClickException("boto3 is required for s3:// outputs (pip install boto3)") from exc
+        raise _fail("boto3 is required for s3:// outputs (pip install boto3)") from exc
 
     buf = io.StringIO()
     count = 0
@@ -315,27 +314,24 @@ def _export_to_s3(events: Iterator[dict[str, Any]], target: str) -> int:
     return count
 
 
-@main.command("retention-export")
-@click.option("--audit-url", required=True, help="POST /api/audit/query endpoint.")
-@click.option("--token", required=True, envvar=["BSVIBE_AUTH_AUDIT_SERVICE_TOKEN"], help="Service JWT.")
-@click.option("--tenant", "tenant_id", default=None, help="Tenant filter (optional, all tenants if omitted).")
-@click.option("--before", required=True, help="ISO timestamp; only events older than this are exported.")
-@click.option("--output", required=True, help="Local file path or s3://bucket/key URL.")
-@click.option("--page-size", type=int, default=500, show_default=True)
+@app.command("retention-export", help="Page over old events and archive them outside the hot tier.")
 def retention_export_cmd(
-    audit_url: str,
-    token: str,
-    tenant_id: str | None,
-    before: str,
-    output: str,
-    page_size: int,
+    audit_url: str = typer.Option(..., "--audit-url", help="POST /api/audit/query endpoint."),
+    token: str = typer.Option(
+        ...,
+        "--token",
+        envvar=["BSVIBE_AUTH_AUDIT_SERVICE_TOKEN"],
+        help="Service JWT.",
+    ),
+    tenant_id: str | None = typer.Option(None, "--tenant", help="Tenant filter (optional, all tenants if omitted)."),
+    before: str = typer.Option(..., "--before", help="ISO timestamp; only events older than this are exported."),
+    output: str = typer.Option(..., "--output", help="Local file path or s3://bucket/key URL."),
+    page_size: int = typer.Option(500, "--page-size"),
 ) -> None:
-    """Page over old events and archive them outside the hot tier."""
-
     parsed = urlparse(output)
     scheme = parsed.scheme.lower()
     if scheme not in ("", "file", "s3"):
-        raise click.ClickException(f"unsupported output scheme: {output!r}")
+        raise _fail(f"unsupported output scheme: {output!r}")
 
     body: dict[str, Any] = {"until": before}
     if tenant_id is not None:
@@ -349,7 +345,7 @@ def retention_export_cmd(
         target = Path(parsed.path) if scheme == "file" else Path(output)
         count = _export_to_file(events, target)
 
-    click.echo(f"exported {count} events to {output}")
+    typer.echo(f"exported {count} events to {output}")
 
 
 # ---------------------------------------------------------------------------
@@ -358,16 +354,18 @@ def retention_export_cmd(
 
 
 def _validate_iso(label: str, value: str) -> str:
-    """Raise a Click error early when ``value`` is not parseable."""
+    """Raise a Typer error early when ``value`` is not parseable."""
 
     from datetime import datetime
 
     try:
-        # Accept Z and +00:00 by normalising.
         cleaned = value.replace("Z", "+00:00")
         datetime.fromisoformat(cleaned)
     except ValueError as exc:
-        raise click.BadParameter(f"--{label}: invalid ISO timestamp {value!r} ({exc})")
+        raise typer.BadParameter(
+            f"--{label}: invalid ISO timestamp {value!r} ({exc})",
+            param_hint=f"'--{label}'",
+        )
     return value
 
 
@@ -382,13 +380,7 @@ async def _replay_events(
     on_event: Callable[[dict[str, Any]], None],
     page_size: int = 200,
 ) -> int:
-    """Walk ``[since, until)`` and invoke ``on_event`` for each row.
-
-    Implementation note: the helper runs synchronously under
-    ``asyncio.run`` for now (httpx Client is sync). It is exposed as an
-    ``async def`` so future migrations to ``httpx.AsyncClient`` are
-    backwards-compatible — callers already ``await`` this function.
-    """
+    """Walk ``[since, until)`` and invoke ``on_event`` for each row."""
 
     body: dict[str, Any] = {"since": since, "until": until}
     if tenant_id is not None:
@@ -403,23 +395,20 @@ async def _replay_events(
     return count
 
 
-@main.command("replay")
-@click.option("--audit-url", required=True, help="POST /api/audit/query endpoint.")
-@click.option("--token", required=True, envvar=["BSVIBE_AUTH_AUDIT_SERVICE_TOKEN"], help="Service JWT.")
-@click.option("--since", required=True, help="ISO timestamp lower bound (inclusive).")
-@click.option("--until", required=True, help="ISO timestamp upper bound (exclusive).")
-@click.option("--tenant", "tenant_id", default=None)
-@click.option("--event-type", default=None)
+@app.command("replay", help="Replay events from a time range, one JSON line per event on stdout.")
 def replay_cmd(
-    audit_url: str,
-    token: str,
-    since: str,
-    until: str,
-    tenant_id: str | None,
-    event_type: str | None,
+    audit_url: str = typer.Option(..., "--audit-url", help="POST /api/audit/query endpoint."),
+    token: str = typer.Option(
+        ...,
+        "--token",
+        envvar=["BSVIBE_AUTH_AUDIT_SERVICE_TOKEN"],
+        help="Service JWT.",
+    ),
+    since: str = typer.Option(..., "--since", help="ISO timestamp lower bound (inclusive)."),
+    until: str = typer.Option(..., "--until", help="ISO timestamp upper bound (exclusive)."),
+    tenant_id: str | None = typer.Option(None, "--tenant"),
+    event_type: str | None = typer.Option(None, "--event-type"),
 ) -> None:
-    """Replay events from a time range, one JSON line per event on stdout."""
-
     _validate_iso("since", since)
     _validate_iso("until", until)
 
@@ -438,10 +427,20 @@ def replay_cmd(
             on_event=_emit,
         )
     )
-    click.echo(str(delivered))
+    typer.echo(str(delivered))
+
+
+def main() -> None:
+    """Console-script entry point. Kept as a function so the existing
+    ``[project.scripts]`` ``bsvibe-audit = "bsvibe_audit.cli:main"``
+    target keeps resolving after the click→Typer migration.
+    """
+
+    app()
 
 
 __all__ = [
+    "app",
     "main",
     "_replay_events",
     "_retry_dead_letter",

@@ -11,6 +11,9 @@ Wire contract:
 The client owns no state beyond an ``httpx.AsyncClient``. The
 :class:`OutboxRelay` runs ``send`` once per batch and translates failures
 into outbox state transitions.
+
+Built on :class:`bsvibe_core.http.HttpClientBase` for shared retry +
+redacted-logging infrastructure. ``X-Service-Token`` is masked in logs.
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
-import structlog
+from bsvibe_core.http import HttpClientBase
 
 
 class AuditDeliveryError(Exception):
@@ -44,7 +47,7 @@ class AuditDeliveryResult:
         self.raw = raw or {}
 
 
-class AuditClient:
+class AuditClient(HttpClientBase):
     """Async client to ``POST /api/audit/events`` on BSVibe-Auth."""
 
     def __init__(
@@ -57,9 +60,13 @@ class AuditClient:
     ) -> None:
         self.audit_url = audit_url
         self.service_token = service_token
-        self._owned_http = http is None
-        self._http = http or httpx.AsyncClient(timeout=timeout_s)
-        self._logger = structlog.get_logger("bsvibe_audit.client")
+        super().__init__(
+            "",
+            http=http,
+            timeout_s=timeout_s,
+            retries=0,
+            headers={"X-Service-Token": service_token},
+        )
 
     @classmethod
     def from_settings(
@@ -75,10 +82,6 @@ class AuditClient:
             timeout_s=timeout_s,
         )
 
-    async def aclose(self) -> None:
-        if self._owned_http and self._http is not None:
-            await self._http.aclose()
-
     async def send(self, payloads: list[dict[str, Any]]) -> AuditDeliveryResult:
         """Send one batch. Raises :class:`AuditDeliveryError` on failure."""
 
@@ -86,10 +89,9 @@ class AuditClient:
             return AuditDeliveryResult(accepted=True)
 
         body = {"events": payloads}
-        headers = {"X-Service-Token": self.service_token}
 
         try:
-            response = await self._http.post(self.audit_url, json=body, headers=headers)
+            response = await self.post(self.audit_url, json=body)
         except httpx.HTTPError as exc:
             raise AuditDeliveryError(f"network error: {exc!r}", retryable=True) from exc
 

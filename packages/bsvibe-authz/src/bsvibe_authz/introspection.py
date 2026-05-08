@@ -7,6 +7,9 @@ so callers can treat unreachable auth-server as "token rejected" without
 leaking the failure mode through the auth path.
 
 Token values are NEVER logged.
+
+Built on :class:`bsvibe_core.http.HttpClientBase` for shared retry +
+redacted-logging infrastructure. The Basic-auth header is masked in logs.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ import base64
 
 import httpx
 import structlog
+from bsvibe_core.http import HttpClientBase
 from pydantic import ValidationError
 
 from .types import IntrospectionResponse
@@ -22,11 +26,12 @@ from .types import IntrospectionResponse
 logger = structlog.get_logger(__name__)
 
 
-class IntrospectionClient:
+class IntrospectionClient(HttpClientBase):
     """RFC 7662 introspection client.
 
     Pass a shared ``httpx.AsyncClient`` for connection-pool reuse in
-    production; if omitted, a one-shot client is created per call.
+    production; if omitted, the underlying client is built lazily on
+    first introspect() call and owned by this instance.
     """
 
     def __init__(
@@ -45,27 +50,26 @@ class IntrospectionClient:
         self._url = introspection_url
         self._client_id = client_id
         self._client_secret = client_secret
-        self._http = http
-        self._timeout_s = timeout_s
 
-    def _basic_auth_header(self) -> str:
-        raw = f"{self._client_id}:{self._client_secret}".encode()
-        return "Basic " + base64.b64encode(raw).decode()
+        raw = f"{client_id}:{client_secret}".encode()
+        basic_auth = "Basic " + base64.b64encode(raw).decode()
+        super().__init__(
+            "",
+            http=http,
+            timeout_s=timeout_s,
+            retries=0,
+            headers={
+                "Authorization": basic_auth,
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+        )
 
     async def introspect(self, token: str) -> IntrospectionResponse:
         body = {"token": token, "token_type_hint": "access_token"}
-        headers = {
-            "Authorization": self._basic_auth_header(),
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Accept": "application/json",
-        }
 
         try:
-            if self._http is not None:
-                resp = await self._http.post(self._url, data=body, headers=headers, timeout=self._timeout_s)
-            else:
-                async with httpx.AsyncClient(timeout=self._timeout_s) as cli:
-                    resp = await cli.post(self._url, data=body, headers=headers)
+            resp = await self.post(self._url, data=body)
             resp.raise_for_status()
             data = resp.json()
         except httpx.HTTPStatusError as exc:

@@ -7,6 +7,7 @@ dependencies = [
     "bsvibe-alerts",
     "bsvibe-audit",
     "bsvibe-authz",
+    "bsvibe-cli-base",
     "bsvibe-core",
     "bsvibe-demo",
     "bsvibe-fastapi",
@@ -18,6 +19,7 @@ dependencies = [
 bsvibe-alerts = { workspace = true }
 bsvibe-audit = { workspace = true }
 bsvibe-authz = { workspace = true }
+bsvibe-cli-base = { workspace = true }
 bsvibe-core = { workspace = true }
 bsvibe-demo = { workspace = true }
 bsvibe-fastapi = { workspace = true }

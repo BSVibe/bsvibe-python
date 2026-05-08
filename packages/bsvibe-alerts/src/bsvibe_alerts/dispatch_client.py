@@ -18,12 +18,8 @@ Design contract (BSVibe_Audit_Design.md §11 D-Z2 + Shared_Library_Roadmap D18):
 * Auth: ``Authorization: Bearer <service_jwt>`` with the ``alerts.dispatch``
   scope. The audience must match ``bsvibe-auth``.
 
-Why a separate client (instead of bolting onto :class:`AlertClient`)?
-``AlertClient`` runs *inside* a producer and decides which local channel
-to call. ``CentralDispatchClient`` runs *between* a producer and the
-single source of truth (the auth-app). The two coexist: a deployment
-that sets ``BSVIBE_AUTH_ALERTS_URL`` swaps the local channel router for
-a thin remote call (see :class:`bsvibe_alerts.router.CentralAlertRouter`).
+Built on :class:`bsvibe_core.http.HttpClientBase` for shared retry +
+redacted-logging infrastructure. ``Authorization`` is masked in logs.
 """
 
 from __future__ import annotations
@@ -32,7 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
-import structlog
+from bsvibe_core.http import HttpClientBase
 
 _DEFAULT_TIMEOUT_S = 5.0
 
@@ -128,7 +124,7 @@ def _event_to_payload(event: Any) -> dict[str, Any]:
     )
 
 
-class CentralDispatchClient:
+class CentralDispatchClient(HttpClientBase):
     """Async wrapper around POST /api/alerts/dispatch on BSVibe-Auth.
 
     Owns nothing but an :class:`httpx.AsyncClient`. The recommended
@@ -150,17 +146,17 @@ class CentralDispatchClient:
             raise ValueError("CentralDispatchClient requires a non-empty service_token")
         self._dispatch_url = _build_dispatch_url(auth_url)
         self._service_token = service_token
-        self._owned_http = http is None
-        self._http = http or httpx.AsyncClient(timeout=timeout_s)
-        self._logger = structlog.get_logger("bsvibe_alerts.dispatch_client")
+        super().__init__(
+            "",
+            http=http,
+            timeout_s=timeout_s,
+            retries=0,
+            headers={"Authorization": f"Bearer {service_token}"},
+        )
 
     @property
     def dispatch_url(self) -> str:
         return self._dispatch_url
-
-    async def aclose(self) -> None:
-        if self._owned_http and self._http is not None:
-            await self._http.aclose()
 
     async def dispatch(self, event: Any) -> DispatchResult:
         """POST one event to /api/alerts/dispatch and return the result.
@@ -172,10 +168,9 @@ class CentralDispatchClient:
         """
 
         payload = _event_to_payload(event)
-        headers = {"Authorization": f"Bearer {self._service_token}"}
 
         try:
-            response = await self._http.post(self._dispatch_url, json=payload, headers=headers)
+            response = await self.post(self._dispatch_url, json=payload)
         except httpx.HTTPError as exc:
             raise CentralDispatchError(f"network error: {exc!r}", retryable=True) from exc
 
