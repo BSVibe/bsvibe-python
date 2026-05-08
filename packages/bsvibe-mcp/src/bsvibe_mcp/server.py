@@ -29,9 +29,18 @@ logger = structlog.get_logger(__name__)
 DEFAULT_SERVER_NAME = "bsvibe-mcp"
 
 # (prefix, dotted import path of the root Typer app)
+#
+# bsnexus's wheel ships ``bsnexus_cli/main.py`` (force-include of
+# ``backend/src/cli/``) but the file's absolute imports still reference
+# ``backend.src.cli.commands`` — so the wheel-installed module fails to
+# import in normal environments. ``_try_register`` catches that and
+# emits a structlog warning; tests for bsnexus use ``importorskip`` and
+# skip until the upstream wheel is fixed.
 _PRODUCT_CLI_MODULES: tuple[tuple[str, str], ...] = (
     ("bsgateway", "bsgateway.cli.main"),
     ("bsage", "bsage.cli.main"),
+    ("bsnexus", "bsnexus_cli.main"),
+    ("bsupervisor", "bsupervisor.cli.main"),
 )
 
 
