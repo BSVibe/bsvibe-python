@@ -80,6 +80,29 @@ def test_settings_introspection_and_bootstrap_from_env(
     assert s.bootstrap_token_hash == "a" * 64
 
 
+def test_settings_introspection_and_bootstrap_from_bsv_prefixed_env(
+    reset_settings_env: pytest.MonkeyPatch,
+) -> None:
+    """`BSV_*` aliases match canonical product-doc env names."""
+    reset_settings_env.setenv("BSVIBE_AUTH_URL", "https://auth.bsvibe.dev")
+    reset_settings_env.setenv("OPENFGA_API_URL", "http://openfga.local:8080")
+    reset_settings_env.setenv("OPENFGA_STORE_ID", "01ABC")
+    reset_settings_env.setenv("OPENFGA_AUTH_MODEL_ID", "01MODEL")
+    reset_settings_env.setenv("SERVICE_TOKEN_SIGNING_SECRET", "secret-1")
+    reset_settings_env.setenv("BSV_INTROSPECTION_URL", "https://auth.bsvibe.dev/api/tokens/introspect")
+    reset_settings_env.setenv("BSV_INTROSPECTION_CLIENT_ID", "bsage")
+    reset_settings_env.setenv("BSV_INTROSPECTION_CLIENT_SECRET", "intro-secret")
+    reset_settings_env.setenv("BSV_BOOTSTRAP_TOKEN_HASH", "b" * 64)
+
+    from bsvibe_authz.settings import Settings
+
+    s = Settings()  # type: ignore[call-arg]
+    assert s.introspection_url == "https://auth.bsvibe.dev/api/tokens/introspect"
+    assert s.introspection_client_id == "bsage"
+    assert s.introspection_client_secret == "intro-secret"
+    assert s.bootstrap_token_hash == "b" * 64
+
+
 def test_settings_get_settings_singleton(reset_settings_env: pytest.MonkeyPatch) -> None:
     reset_settings_env.setenv("BSVIBE_AUTH_URL", "https://auth.bsvibe.dev")
     reset_settings_env.setenv("OPENFGA_API_URL", "http://openfga.local:8080")
