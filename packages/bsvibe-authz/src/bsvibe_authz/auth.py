@@ -35,15 +35,39 @@ class AuthError(Exception):
     """Authentication failed (invalid signature, expired, wrong audience, ...)."""
 
 
-def _user_signing_key(settings: Settings) -> str:
+_jwks_client_cache: dict[str, jwt.PyJWKClient] = {}
+
+
+def _resolve_user_signing_key(token: str, settings: Settings) -> Any:
+    """Resolve the verification key for ``token``.
+
+    Priority order: JWKS URL → static public key → symmetric secret.
+    The JWKS client is cached per-process and per-URL; ``PyJWKClient``
+    handles its own LRU cache for kid → key resolution.
+    """
+    if settings.user_jwt_jwks_url:
+        client = _jwks_client_cache.get(settings.user_jwt_jwks_url)
+        if client is None:
+            client = jwt.PyJWKClient(settings.user_jwt_jwks_url)
+            _jwks_client_cache[settings.user_jwt_jwks_url] = client
+        try:
+            return client.get_signing_key_from_jwt(token).key
+        except jwt.PyJWKClientError as exc:
+            raise AuthError(f"JWKS resolution failed: {exc}") from exc
+
     if settings.user_jwt_algorithm == "HS256":
         if not settings.user_jwt_secret:
             raise AuthError("user_jwt_secret not configured")
         return settings.user_jwt_secret
-    # RS256/ES256/EdDSA — public key
+
     if not settings.user_jwt_public_key:
-        raise AuthError("user_jwt_public_key not configured")
+        raise AuthError("user_jwt_public_key or user_jwt_jwks_url not configured")
     return settings.user_jwt_public_key
+
+
+def reset_jwks_cache() -> None:
+    """Drop the per-process JWKS client cache — used by tests."""
+    _jwks_client_cache.clear()
 
 
 def verify_user_jwt(token: str, settings: Settings) -> dict[str, Any]:
@@ -56,7 +80,7 @@ def verify_user_jwt(token: str, settings: Settings) -> dict[str, Any]:
     try:
         payload = jwt.decode(
             token,
-            _user_signing_key(settings),
+            _resolve_user_signing_key(token, settings),
             algorithms=[settings.user_jwt_algorithm],
             audience=settings.user_jwt_audience,
             issuer=settings.user_jwt_issuer,
@@ -181,15 +205,37 @@ def parse_user_token(payload: dict[str, Any]) -> User:
 
     The Phase 0 user JWT is intentionally thin (Auth_Design §4.1) — tenants
     list comes from a separate `/api/session` call, not from claims.
+
+    ``app_metadata`` and ``user_metadata`` are lifted off the payload
+    (Supabase convention) so consumers can read role / custom claims
+    without decoding the token a second time. ``active_tenant_id`` falls
+    back to ``app_metadata.tenant_id`` when the top-level claim is absent
+    — Supabase JWTs nest tenant under app_metadata.
     """
     sub = payload.get("sub")
     if not isinstance(sub, str) or not sub:
         raise AuthError("user JWT missing sub")
     is_service = sub.startswith("service:")
+
+    app_metadata = payload.get("app_metadata") or {}
+    user_metadata = payload.get("user_metadata") or {}
+    if not isinstance(app_metadata, dict):
+        app_metadata = {}
+    if not isinstance(user_metadata, dict):
+        user_metadata = {}
+
+    active_tenant_id = payload.get("active_tenant_id")
+    if not active_tenant_id:
+        nested = app_metadata.get("tenant_id")
+        if isinstance(nested, str) and nested:
+            active_tenant_id = nested
+
     return User(
         id=sub,
         email=payload.get("email"),
-        active_tenant_id=payload.get("active_tenant_id"),
+        active_tenant_id=active_tenant_id,
         tenants=[],
         is_service=is_service,
+        app_metadata=app_metadata,
+        user_metadata=user_metadata,
     )
