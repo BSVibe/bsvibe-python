@@ -26,6 +26,10 @@ class Profile(BaseModel):
         default=None,
         description="Opaque handle resolved via keyring or env at request time.",
     )
+    refresh_token_ref: str | None = Field(
+        default=None,
+        description="Opaque handle for the refresh token, resolved via keyring.",
+    )
 
 
 class CliConfig(BaseModel):
