@@ -305,3 +305,85 @@ class TestFormatterWiring:
         result = runner.invoke(app, ["show"])
         assert result.exit_code == 0
         assert captured["obj"].formatter.format == "json"
+
+
+# ---------------------------------------------------------------------------
+# Auto-wired login + profile subapps
+# ---------------------------------------------------------------------------
+
+
+class TestAutoWiredSubapps:
+    """``cli_app()`` registers ``login`` and ``profile`` subapps by default
+    so every product CLI exposes them without having to import or wire
+    each one — the ``library-fix-doesnt-cascade-when-callers-rewrap``
+    trap explicitly avoided.
+    """
+
+    def test_login_subapp_present_by_default(
+        self, store_with_dev_active: ProfileStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("BSVIBE_PROFILE", raising=False)
+        app = cli_app(name="demo", profile_store=store_with_dev_active)
+        runner = CliRunner()
+        result = runner.invoke(app, ["login", "--help"])
+        assert result.exit_code == 0, result.output
+        assert "--auth-url" in result.output
+
+    def test_profile_subapp_present_by_default(
+        self, store_with_dev_active: ProfileStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("BSVIBE_PROFILE", raising=False)
+        app = cli_app(name="demo", profile_store=store_with_dev_active)
+        runner = CliRunner()
+        result = runner.invoke(app, ["profile", "--help"])
+        assert result.exit_code == 0, result.output
+        for needle in ("add", "list", "use", "remove"):
+            assert needle in result.output, f"missing 'profile {needle}' in --help"
+
+    def test_auto_login_false_omits_subapps(
+        self, store_with_dev_active: ProfileStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("BSVIBE_PROFILE", raising=False)
+        app = cli_app(name="demo", profile_store=store_with_dev_active, auto_login=False)
+        runner = CliRunner()
+        result = runner.invoke(app, ["login", "--help"])
+        assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# keyring_persist_callback wiring
+# ---------------------------------------------------------------------------
+
+
+class TestKeyringPersistCallback:
+    def test_callback_present_when_profile_resolved(
+        self, store_with_dev_active: ProfileStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, CliContext] = {}
+        monkeypatch.delenv("BSVIBE_PROFILE", raising=False)
+
+        app = cli_app(name="demo", profile_store=store_with_dev_active)
+
+        @app.command()
+        def show(ctx: typer.Context) -> None:
+            captured["obj"] = ctx.obj
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["show"])
+        assert result.exit_code == 0, result.output
+        assert captured["obj"].keyring_persist_callback is not None
+
+    def test_callback_absent_when_no_profile(self, store: ProfileStore, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict[str, CliContext] = {}
+        monkeypatch.delenv("BSVIBE_PROFILE", raising=False)
+
+        app = cli_app(name="demo", profile_store=store)
+
+        @app.command()
+        def show(ctx: typer.Context) -> None:
+            captured["obj"] = ctx.obj
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["show"])
+        assert result.exit_code == 0
+        assert captured["obj"].keyring_persist_callback is None

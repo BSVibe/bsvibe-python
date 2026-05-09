@@ -27,6 +27,7 @@ remote — that lives in :mod:`bsvibe_cli_base.http` (TASK-006).
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -39,7 +40,7 @@ from bsvibe_cli_base.output import OutputFormatter
 from bsvibe_cli_base.profile import ProfileNotFoundError, ProfileStore
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    pass
+    from bsvibe_cli_base.device_flow import DeviceTokenGrant
 
 logger = structlog.get_logger(__name__)
 
@@ -51,6 +52,11 @@ class CliContext:
     Subcommands access it as ``ctx.obj`` and read whichever fields they
     need; the factory has already merged the flag, env, and profile
     sources into a single resolved view.
+
+    ``keyring_persist_callback`` is non-None when a profile resolved.
+    Subcommands that build a :class:`CliHttpClient` should pass it as
+    ``on_token_refreshed=`` so a 401-then-refresh rotation persists the
+    new tokens to keyring.
     """
 
     profile: Profile | None
@@ -60,6 +66,7 @@ class CliContext:
     dry_run: bool
     formatter: OutputFormatter
     profile_store: ProfileStore
+    keyring_persist_callback: Callable[["DeviceTokenGrant"], None] | None = None
 
 
 def cli_app(
@@ -67,6 +74,7 @@ def cli_app(
     name: str,
     help: str | None = None,
     profile_store: ProfileStore | None = None,
+    auto_login: bool = True,
 ) -> typer.Typer:
     """Build a Typer app with the standard global flag set wired.
 
@@ -80,6 +88,10 @@ def cli_app(
         Override the profile store (tests pass a tmp-path-backed
         instance). Production callers typically rely on the default
         XDG-resolved store.
+    auto_login:
+        Register the ``login`` and ``profile`` subapps automatically.
+        Set to ``False`` for niche product CLIs that ship their own
+        auth flow.
     """
 
     store = profile_store if profile_store is not None else ProfileStore()
@@ -89,6 +101,15 @@ def cli_app(
         no_args_is_help=True,
         add_completion=False,
     )
+
+    if auto_login:
+        # Imported lazily so cli.py stays importable even if a downstream
+        # consumer monkeypatches one of the subapp modules.
+        from bsvibe_cli_base.login_cmd import login_app
+        from bsvibe_cli_base.profile_cmd import profile_app
+
+        app.add_typer(login_app, name="login")
+        app.add_typer(profile_app, name="profile")
 
     @app.callback()
     def _root(
@@ -148,6 +169,10 @@ def cli_app(
             typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(code=2) from None
 
+        persist_callback = (
+            keyring_mod.make_persist_callback(resolved_profile.name) if resolved_profile is not None else None
+        )
+
         ctx.obj = CliContext(
             profile=resolved_profile,
             url=resolved_url,
@@ -156,6 +181,7 @@ def cli_app(
             dry_run=dry_run,
             formatter=formatter,
             profile_store=store,
+            keyring_persist_callback=persist_callback,
         )
 
     return app

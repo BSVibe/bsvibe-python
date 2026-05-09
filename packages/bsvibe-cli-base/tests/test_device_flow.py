@@ -101,6 +101,35 @@ class TestRequestCode:
             await client.aclose()
         assert "invalid_client" in str(exc_info.value)
 
+    async def test_audience_included_in_body(self) -> None:
+        """``audience`` is a BSVibe extension to the RFC 8628 body so a
+        single PAT can be scoped to multiple downstream products in one
+        device flow round.
+        """
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = request.read()
+            return httpx.Response(
+                200,
+                json={
+                    "device_code": "d",
+                    "user_code": "U",
+                    "verification_uri": "https://x",
+                    "expires_in": 600,
+                    "interval": 5,
+                },
+            )
+
+        client = _build_client(handler)
+        try:
+            await client.request_code(scope="gateway:*", audience="gateway,sage")
+        finally:
+            await client.aclose()
+        body = captured["body"].decode("utf-8")
+        assert "gateway,sage" in body
+        assert "gateway:*" in body
+
 
 class TestPollToken:
     async def test_pending_then_approved(self) -> None:

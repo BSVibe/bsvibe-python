@@ -91,11 +91,23 @@ class DeviceFlowClient(HttpClientBase):
         self._token_path = token_path
         self._monotonic: Callable[[], float] = time.monotonic
 
-    async def request_code(self, *, scope: str | None = None) -> DeviceCode:
-        """Request a fresh device + user code pair from the auth server."""
+    async def request_code(
+        self,
+        *,
+        scope: str | None = None,
+        audience: str | None = None,
+    ) -> DeviceCode:
+        """Request a fresh device + user code pair from the auth server.
+
+        ``audience`` is a BSVibe extension carried verbatim in the JSON
+        body so a single PAT can be scoped to multiple downstream
+        products (e.g. ``"gateway,sage,nexus,supervisor"``).
+        """
         body: dict[str, Any] = {"client_id": self._client_id}
         if scope:
             body["scope"] = scope
+        if audience:
+            body["audience"] = audience
         resp = await self.post(self._code_path, json=body)
         if resp.status_code >= 400:
             raise DeviceFlowError(f"device_code request failed: {resp.status_code} {_error_msg(resp)}")

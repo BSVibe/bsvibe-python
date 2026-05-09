@@ -25,12 +25,14 @@ from bsvibe_cli_base.device_flow import (
     DeviceTokenGrant,
 )
 from bsvibe_cli_base.http import CliHttpAuthError, CliHttpClient
+from bsvibe_cli_base.login_cmd import do_login, login_app
 from bsvibe_cli_base.output import FORMATS, OutputFormatter
 from bsvibe_cli_base.profile import (
     ProfileExistsError,
     ProfileNotFoundError,
     ProfileStore,
 )
+from bsvibe_cli_base.profile_cmd import profile_app
 
 __version__ = "0.1.0"
 
@@ -51,5 +53,8 @@ __all__ = [
     "DeviceFlowClient",
     "DeviceFlowError",
     "DeviceFlowTimeoutError",
+    "do_login",
+    "login_app",
+    "profile_app",
     "__version__",
 ]
