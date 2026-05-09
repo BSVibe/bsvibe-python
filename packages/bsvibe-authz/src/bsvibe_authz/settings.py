@@ -51,9 +51,15 @@ class Settings(BaseSettings):
     bsvibe_client_id: str | None = None
     bsvibe_client_secret: str | None = None
 
-    # User session JWT verification.
+    # User session JWT verification. Three signing-key sources, in
+    # priority order: (1) ``user_jwt_jwks_url`` — fetch + cache the
+    # JWKS document and resolve the signing key from the token's ``kid``
+    # header (BSVibe-Auth and Supabase rotation pattern); (2)
+    # ``user_jwt_public_key`` — static PEM for asymmetric algos;
+    # (3) ``user_jwt_secret`` — symmetric key for HS256.
     user_jwt_secret: str | None = None
     user_jwt_public_key: str | None = None
+    user_jwt_jwks_url: str | None = None
     user_jwt_algorithm: UserJwtAlgorithm = "HS256"
     user_jwt_audience: str = "bsvibe"
     user_jwt_issuer: str | None = None

@@ -27,6 +27,96 @@ def auth_settings(user_jwt_secret: str, service_signing_secret: str, issuer: str
     )
 
 
+async def test_verify_user_jwt_uses_jwks_when_url_set(monkeypatch, issuer, now) -> None:
+    """``user_jwt_jwks_url`` takes priority over symmetric/static keys."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    from bsvibe_authz.auth import reset_jwks_cache, verify_user_jwt
+    from bsvibe_authz.settings import Settings
+
+    private = ec.generate_private_key(ec.SECP256R1())
+    pub_pem = private.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    priv_pem = private.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+    token = jwt.encode(
+        {
+            "iss": issuer,
+            "sub": "u-jwks",
+            "iat": now,
+            "exp": now + 60,
+            "aud": "bsvibe",
+        },
+        priv_pem,
+        algorithm="ES256",
+        headers={"kid": "test-key-1"},
+    )
+
+    settings = Settings(  # type: ignore[call-arg]
+        bsvibe_auth_url=issuer,
+        openfga_api_url="http://openfga.local:8080",
+        openfga_store_id="store-1",
+        openfga_auth_model_id="model-1",
+        service_token_signing_secret="x",
+        user_jwt_jwks_url="https://auth.bsvibe.dev/.well-known/jwks.json",
+        user_jwt_algorithm="ES256",
+        user_jwt_audience="bsvibe",
+        user_jwt_issuer=issuer,
+    )
+
+    class _StubJWKSKey:
+        def __init__(self, key: bytes) -> None:
+            self.key = key
+
+    class _StubJWKSClient:
+        def __init__(self, *_a, **_kw) -> None: ...
+
+        def get_signing_key_from_jwt(self, _token: str) -> _StubJWKSKey:
+            return _StubJWKSKey(pub_pem)
+
+    monkeypatch.setattr(jwt, "PyJWKClient", _StubJWKSClient)
+    reset_jwks_cache()
+
+    payload = verify_user_jwt(token, settings)
+    assert payload["sub"] == "u-jwks"
+
+
+async def test_verify_user_jwt_jwks_resolution_failure_raises(monkeypatch, issuer) -> None:
+    from bsvibe_authz.auth import AuthError, reset_jwks_cache, verify_user_jwt
+    from bsvibe_authz.settings import Settings
+
+    class _BrokenJWKSClient:
+        def __init__(self, *_a, **_kw) -> None: ...
+
+        def get_signing_key_from_jwt(self, _token: str):
+            raise jwt.PyJWKClientError("could not fetch JWKS")
+
+    monkeypatch.setattr(jwt, "PyJWKClient", _BrokenJWKSClient)
+    reset_jwks_cache()
+
+    settings = Settings(  # type: ignore[call-arg]
+        bsvibe_auth_url=issuer,
+        openfga_api_url="http://openfga.local:8080",
+        openfga_store_id="store-1",
+        openfga_auth_model_id="model-1",
+        service_token_signing_secret="x",
+        user_jwt_jwks_url="https://auth.example/.well-known/jwks.json",
+        user_jwt_algorithm="ES256",
+        user_jwt_audience="bsvibe",
+        user_jwt_issuer=issuer,
+    )
+
+    with pytest.raises(AuthError, match="JWKS"):
+        verify_user_jwt("a.b.c", settings)
+
+
 async def test_verify_user_jwt_returns_payload(auth_settings, make_user_jwt) -> None:
     from bsvibe_authz.auth import verify_user_jwt
 
@@ -210,6 +300,60 @@ async def test_parse_user_token_returns_user(auth_settings, make_user_jwt) -> No
     assert user.email == "alice@bsvibe.dev"
     assert user.active_tenant_id == "t-1"
     assert user.is_service is False
+    # New: empty metadata when claims don't provide them.
+    assert user.app_metadata == {}
+    assert user.user_metadata == {}
+
+
+async def test_parse_user_token_lifts_app_metadata(auth_settings, make_user_jwt) -> None:
+    """Supabase claims under ``app_metadata`` / ``user_metadata`` flow through."""
+    from bsvibe_authz.auth import parse_user_token, verify_user_jwt
+
+    token = make_user_jwt(
+        sub="u-1",
+        active_tenant_id="t-1",
+        extra_claims={
+            "app_metadata": {"role": "admin", "tenant_id": "t-1"},
+            "user_metadata": {"name": "Alice"},
+        },
+    )
+    payload = verify_user_jwt(token, auth_settings)
+    user = parse_user_token(payload)
+    assert user.app_metadata == {"role": "admin", "tenant_id": "t-1"}
+    assert user.user_metadata == {"name": "Alice"}
+
+
+async def test_parse_user_token_falls_back_to_app_metadata_tenant_id(auth_settings, make_user_jwt) -> None:
+    """Supabase JWTs nest tenant_id under app_metadata — lift it as fallback."""
+    from bsvibe_authz.auth import parse_user_token, verify_user_jwt
+
+    # No top-level active_tenant_id — only the nested one.
+    token = make_user_jwt(
+        sub="u-1",
+        active_tenant_id="",  # cleared below by extra_claims override
+        extra_claims={
+            "active_tenant_id": None,
+            "app_metadata": {"role": "viewer", "tenant_id": "t-nested"},
+        },
+    )
+    payload = verify_user_jwt(token, auth_settings)
+    user = parse_user_token(payload)
+    assert user.active_tenant_id == "t-nested"
+    assert user.app_metadata["tenant_id"] == "t-nested"
+
+
+async def test_parse_user_token_top_level_tenant_id_wins(auth_settings, make_user_jwt) -> None:
+    """Top-level active_tenant_id takes precedence over app_metadata.tenant_id."""
+    from bsvibe_authz.auth import parse_user_token, verify_user_jwt
+
+    token = make_user_jwt(
+        sub="u-1",
+        active_tenant_id="t-top",
+        extra_claims={"app_metadata": {"tenant_id": "t-nested"}},
+    )
+    payload = verify_user_jwt(token, auth_settings)
+    user = parse_user_token(payload)
+    assert user.active_tenant_id == "t-top"
 
 
 # ---------------------------------------------------------------------------

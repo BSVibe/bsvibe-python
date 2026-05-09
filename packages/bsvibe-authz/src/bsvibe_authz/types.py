@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -70,6 +70,12 @@ class User(BaseModel):
     # prod user_jwt_secret), permissions short-circuit to allow.
     is_demo: bool = False
     scope: list[str] = Field(default_factory=list)
+    # Supabase-style claim payload extensions. ``parse_user_token`` lifts
+    # them off the verified user JWT so consumers (BSGateway, BSNexus)
+    # can read role / tenant_id / custom claims without a second decode.
+    # Empty for bootstrap, opaque, and PAT-JWT-introspection flows.
+    app_metadata: dict[str, Any] = Field(default_factory=dict)
+    user_metadata: dict[str, Any] = Field(default_factory=dict)
 
     def role_in(self, tenant_id: str) -> TenantRole | None:
         for t in self.tenants:
