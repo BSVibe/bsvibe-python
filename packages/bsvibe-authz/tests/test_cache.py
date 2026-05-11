@@ -208,3 +208,87 @@ async def test_introspection_cache_ttl_configurable(ttl: int) -> None:
 
     cache = IntrospectionCache(ttl_s=ttl)
     assert cache.ttl_s == ttl
+
+
+# ---------------------------------------------------------------------------
+# Round 4 Finding 17 — cache must respect token's own ``exp`` claim
+# ---------------------------------------------------------------------------
+
+
+async def test_introspection_cache_caps_entry_at_token_exp() -> None:
+    """The cache's TTL must never extend beyond the token's own ``exp``
+    (RFC 7662 §2.2 epoch seconds). Otherwise an ``active=True`` response
+    cached near the token's issuance time outlives the token itself —
+    a security bug surfaced as Round 4 Finding 17 (sage accepted a
+    50-minute-expired PAT)."""
+    from bsvibe_authz.cache import IntrospectionCache
+
+    # Monotonic + wall clocks controlled together.
+    mono = [0.0]
+    wall = [1_000_000.0]
+    cache = IntrospectionCache(
+        ttl_s=3600,  # cache wants to hold the entry for 1 hour
+        clock=lambda: mono[0],
+        wall_clock=lambda: wall[0],
+    )
+
+    # Token expires in 60s (much shorter than cache TTL).
+    token_exp_epoch = int(wall[0] + 60)
+    response = IntrospectionResponse(active=True, sub="u", exp=token_exp_epoch)
+    await cache.set(_sha("short-lived"), response)
+
+    # Right after set — both clocks still at t=0 — entry valid.
+    assert await cache.get(_sha("short-lived")) is not None
+
+    # Advance both clocks past the token's exp (61s).
+    mono[0] += 61
+    wall[0] += 61
+    # Cache TTL says 3600s but token exp was 60s → entry must be expired.
+    assert await cache.get(_sha("short-lived")) is None
+
+
+async def test_introspection_cache_uses_cache_ttl_when_token_exp_missing() -> None:
+    """Tokens without an ``exp`` claim (legacy / inactive responses) fall
+    back to the configured cache TTL — no regression for that path."""
+    from bsvibe_authz.cache import IntrospectionCache
+
+    mono = [0.0]
+    wall = [1_000_000.0]
+    cache = IntrospectionCache(
+        ttl_s=60,
+        clock=lambda: mono[0],
+        wall_clock=lambda: wall[0],
+    )
+    await cache.set(_sha("no-exp"), IntrospectionResponse(active=True, sub="u"))
+
+    mono[0] += 30
+    wall[0] += 30
+    assert await cache.get(_sha("no-exp")) is not None
+
+    mono[0] += 31
+    wall[0] += 31
+    assert await cache.get(_sha("no-exp")) is None
+
+
+async def test_introspection_cache_inactive_response_ignores_token_exp() -> None:
+    """Inactive responses are cached for the full cache TTL even if they
+    carry an ``exp`` claim — they exist to suppress re-query storms on
+    revoked tokens, not to track liveness."""
+    from bsvibe_authz.cache import IntrospectionCache
+
+    mono = [0.0]
+    wall = [1_000_000.0]
+    cache = IntrospectionCache(
+        ttl_s=60,
+        clock=lambda: mono[0],
+        wall_clock=lambda: wall[0],
+    )
+    inactive = IntrospectionResponse(active=False, exp=int(wall[0] + 10))
+    await cache.set(_sha("revoked"), inactive)
+
+    # Past the token exp but inside cache TTL → still cached as inactive.
+    mono[0] += 30
+    wall[0] += 30
+    got = await cache.get(_sha("revoked"))
+    assert got is not None
+    assert got.active is False
