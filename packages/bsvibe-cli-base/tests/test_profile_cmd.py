@@ -80,6 +80,91 @@ class TestProfileAdd:
         assert result.exit_code != 0
         assert "exists" in result.output.lower() or "exist" in result.output.lower()
 
+    def test_add_bare_host_auto_prefixes_https(
+        self, store: ProfileStore, app_factory
+    ) -> None:
+        # Operator slip-up: dropping the scheme. Pre-fix profile add wrote
+        # "//api.prod" to disk and the next CliHttpClient invocation
+        # crashed with UnsupportedProtocol. Now auto-prefixed to https://.
+        runner = CliRunner()
+        result = runner.invoke(
+            app_factory(),
+            ["profile", "add", "prod", "--url", "api.prod"],
+        )
+        assert result.exit_code == 0, result.output
+        assert store.get_profile("prod").url == "https://api.prod"
+
+    def test_add_bare_host_with_port_auto_prefixes(
+        self, store: ProfileStore, app_factory
+    ) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            app_factory(),
+            ["profile", "add", "dev", "--url", "localhost:8000"],
+        )
+        assert result.exit_code == 0, result.output
+        assert store.get_profile("dev").url == "https://localhost:8000"
+
+    def test_add_rejects_protocol_relative_url(
+        self, store: ProfileStore, app_factory
+    ) -> None:
+        # Most often produced by shell quoting bugs (`'gw:https://x'` →
+        # `${var##*:}` → `//api.prod`). Reject explicitly so the bad
+        # value never lands in config.yaml.
+        runner = CliRunner()
+        result = runner.invoke(
+            app_factory(),
+            ["profile", "add", "prod", "--url", "//api.prod"],
+        )
+        assert result.exit_code != 0
+        assert "explicit scheme" in result.output
+
+    def test_add_rejects_unknown_scheme(
+        self, store: ProfileStore, app_factory
+    ) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            app_factory(),
+            ["profile", "add", "prod", "--url", "ftp://api.prod"],
+        )
+        assert result.exit_code != 0
+        assert "scheme" in result.output
+
+    def test_add_rejects_empty_url(
+        self, store: ProfileStore, app_factory
+    ) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            app_factory(),
+            ["profile", "add", "prod", "--url", "   "],
+        )
+        assert result.exit_code != 0
+
+    def test_add_preserves_path_after_auto_prefix(
+        self, store: ProfileStore, app_factory
+    ) -> None:
+        # Don't strip path components when auto-prefixing.
+        runner = CliRunner()
+        result = runner.invoke(
+            app_factory(),
+            ["profile", "add", "prod", "--url", "api.prod/api/v1"],
+        )
+        assert result.exit_code == 0, result.output
+        assert store.get_profile("prod").url == "https://api.prod/api/v1"
+
+    def test_add_keeps_http_for_localhost(
+        self, store: ProfileStore, app_factory
+    ) -> None:
+        # Don't force https on http://localhost — dev servers commonly
+        # run plain http. Only auto-prefix when scheme is missing.
+        runner = CliRunner()
+        result = runner.invoke(
+            app_factory(),
+            ["profile", "add", "dev", "--url", "http://localhost:18100"],
+        )
+        assert result.exit_code == 0, result.output
+        assert store.get_profile("dev").url == "http://localhost:18100"
+
 
 # ---------------------------------------------------------------------------
 # list

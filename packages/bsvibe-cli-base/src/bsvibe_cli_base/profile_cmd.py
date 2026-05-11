@@ -8,6 +8,8 @@ through.
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 import typer
 
 from bsvibe_cli_base.cli import CliContext
@@ -17,6 +19,58 @@ from bsvibe_cli_base.profile import (
     ProfileNotFoundError,
     ProfileStore,
 )
+
+
+def _normalize_url(url: str) -> str:
+    """Canonicalize a control-plane URL to ``https://host[:port]``.
+
+    Profile add silently used to accept ``--url 'gateway.bsvibe.dev'`` and
+    write it through to ``~/.bsvibe/config.yaml`` verbatim. The first call
+    that consumed the profile then crashed with ``UnsupportedProtocol``
+    because httpx cannot dial a URL without a scheme. Reject inputs that
+    can't be made into a valid http(s) URL up-front, and auto-prefix
+    ``https://`` for the common operator slip-up of dropping the scheme.
+
+    Allowed inputs:
+      ``https://api-gateway.bsvibe.dev``     → unchanged
+      ``http://localhost:8000``              → unchanged (dev)
+      ``api-gateway.bsvibe.dev``             → ``https://api-gateway.bsvibe.dev``
+      ``api-gateway.bsvibe.dev/api/v1``      → ``https://api-gateway.bsvibe.dev/api/v1``
+      ``api-gateway.bsvibe.dev:8000``        → ``https://api-gateway.bsvibe.dev:8000``
+
+    Rejected:
+      ``ftp://...``                          → BadParameter ("scheme must be http or https")
+      ``""`` / ``"   "``                     → BadParameter ("URL must be non-empty")
+      ``//host``                             → BadParameter (could be either scheme; explicit required)
+    """
+    stripped = url.strip()
+    if not stripped:
+        raise typer.BadParameter("URL must be non-empty.")
+    if stripped.startswith("//"):
+        raise typer.BadParameter(
+            "URL must include an explicit scheme (got protocol-relative "
+            f"{url!r}). Use https://… or http://…."
+        )
+    # Use ``://`` as the discriminator instead of urlparse's scheme
+    # detection — urlparse parses ``localhost:8000`` as scheme=localhost,
+    # path=8000, which is the wrong split for our domain. Only inputs
+    # that explicitly contain ``://`` are treated as already-schemed.
+    if "://" not in stripped:
+        candidate = f"https://{stripped}"
+        if not urlparse(candidate).hostname:
+            raise typer.BadParameter(
+                f"URL has no parseable host: {url!r}. Use the form "
+                "https://api-<product>.bsvibe.dev."
+            )
+        return candidate
+    parsed = urlparse(stripped)
+    if parsed.scheme not in {"http", "https"}:
+        raise typer.BadParameter(
+            f"URL scheme must be http or https (got {parsed.scheme!r})."
+        )
+    if not parsed.hostname:
+        raise typer.BadParameter(f"URL has no host: {url!r}.")
+    return stripped
 
 profile_app = typer.Typer(
     name="profile",
@@ -42,11 +96,12 @@ def add(
     set_default: bool = typer.Option(False, "--default", help="Mark this profile as the active default."),
 ) -> None:
     store = _store(ctx)
+    normalized = _normalize_url(url)
     try:
         store.add_profile(
             Profile(
                 name=name,
-                url=url,
+                url=normalized,
                 tenant_id=tenant,
                 default=set_default,
             )
