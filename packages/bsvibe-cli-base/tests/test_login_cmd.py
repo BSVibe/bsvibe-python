@@ -317,3 +317,94 @@ class TestLoginTyperApp:
         # Help should mention the device-flow surface.
         for needle in ("--auth-url", "--client-id", "--scope"):
             assert needle in result.output, f"missing {needle} in login --help"
+
+    def test_login_failure_cleanup_runs_in_same_asyncio_loop(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """When ``do_login`` raises, ``flow_client.aclose()`` MUST run inside
+        the same ``asyncio.run`` invocation as ``do_login`` — not from a
+        ``finally:`` block that spins up a second ``asyncio.run``.
+
+        Why: a second ``asyncio.run`` creates a fresh event loop, but httpx's
+        connection pool kept a reference to the FIRST loop. Calling aclose
+        on the new loop tries to schedule callbacks on the dead loop and
+        crashes with ``RuntimeError: Event loop is closed`` (Phase 8 dogfood
+        2026-05-11, every CLI login failure dumped a noisy traceback after
+        the friendly error message).
+
+        Enforcement: only ONE ``asyncio.run`` call from login_cmd, and the
+        stubbed ``aclose`` is observed via the do_login flow's exception path.
+        """
+        from unittest.mock import patch
+        from typer.testing import CliRunner
+
+        import bsvibe_cli_base.login_cmd as login_cmd
+
+        aclose_calls: list[int] = []
+
+        class _FailingDeviceFlow:
+            def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+                pass
+
+            async def request_code(self, *_args: Any, **_kwargs: Any) -> Any:
+                raise DeviceFlowError("device_code request failed: 404 ...")
+
+            async def poll_token(self, *_args: Any, **_kwargs: Any) -> Any:
+                raise AssertionError("poll_token should not be reached")
+
+            async def aclose(self) -> None:
+                # Record event loop identity at cleanup time. The fix is to
+                # close inside the same loop as do_login — different identities
+                # would mean we regressed to the two-asyncio.run shape.
+                aclose_calls.append(id(asyncio.get_running_loop()))
+
+        # Spy on asyncio.run so we can prove only one event loop is spun up.
+        import asyncio
+
+        real_asyncio_run = asyncio.run
+        run_invocations: list[int] = []
+
+        def _counting_run(coro: Any, *args: Any, **kwargs: Any) -> Any:
+            run_invocations.append(1)
+            return real_asyncio_run(coro, *args, **kwargs)
+
+        runner = CliRunner()
+        config_path = tmp_path / "config.yaml"
+        with (
+            patch.object(login_cmd, "DeviceFlowClient", _FailingDeviceFlow),
+            patch.object(
+                login_cmd,
+                "ProfileStore",
+                lambda: ProfileStore(path=config_path),
+            ),
+            patch.object(login_cmd.asyncio, "run", _counting_run),
+        ):
+            result = runner.invoke(
+                login_cmd.login_app,
+                [
+                    "--auth-url",
+                    "https://auth.example.test",
+                    "--client-id",
+                    "cli",
+                    "--scope",
+                    "gateway:*",
+                    "--audience",
+                    "gateway",
+                    "--profile-name",
+                    "ci",
+                    "--profile-url",
+                    "https://gateway.example.test",
+                ],
+            )
+
+        assert result.exit_code == 1, (result.output, result.exception)
+        assert "Login failed" in result.output
+        assert "Event loop is closed" not in result.output, result.output
+        # The actual structural guarantee: cleanup ran exactly once, inside
+        # a single asyncio.run.
+        assert len(aclose_calls) == 1, aclose_calls
+        assert len(run_invocations) == 1, (
+            f"Expected exactly one asyncio.run from login_cmd "
+            f"(do_login + aclose share the same loop); saw {len(run_invocations)}."
+        )

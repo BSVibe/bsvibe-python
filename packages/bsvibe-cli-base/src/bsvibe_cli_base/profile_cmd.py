@@ -48,8 +48,7 @@ def _normalize_url(url: str) -> str:
         raise typer.BadParameter("URL must be non-empty.")
     if stripped.startswith("//"):
         raise typer.BadParameter(
-            "URL must include an explicit scheme (got protocol-relative "
-            f"{url!r}). Use https://… or http://…."
+            f"URL must include an explicit scheme (got protocol-relative {url!r}). Use https://… or http://…."
         )
     # Use ``://`` as the discriminator instead of urlparse's scheme
     # detection — urlparse parses ``localhost:8000`` as scheme=localhost,
@@ -59,18 +58,16 @@ def _normalize_url(url: str) -> str:
         candidate = f"https://{stripped}"
         if not urlparse(candidate).hostname:
             raise typer.BadParameter(
-                f"URL has no parseable host: {url!r}. Use the form "
-                "https://api-<product>.bsvibe.dev."
+                f"URL has no parseable host: {url!r}. Use the form https://api-<product>.bsvibe.dev."
             )
         return candidate
     parsed = urlparse(stripped)
     if parsed.scheme not in {"http", "https"}:
-        raise typer.BadParameter(
-            f"URL scheme must be http or https (got {parsed.scheme!r})."
-        )
+        raise typer.BadParameter(f"URL scheme must be http or https (got {parsed.scheme!r}).")
     if not parsed.hostname:
         raise typer.BadParameter(f"URL has no host: {url!r}.")
     return stripped
+
 
 profile_app = typer.Typer(
     name="profile",

@@ -146,9 +146,15 @@ def login(
         raise typer.Exit(code=2)
 
     flow_client = DeviceFlowClient(auth_url, client_id=client_id)
-    try:
-        asyncio.run(
-            do_login(
+
+    # do_login + aclose MUST share one asyncio loop. Running aclose from an
+    # outer ``finally:`` via a second ``asyncio.run`` leaves httpx's
+    # connection pool bound to the now-closed first loop and crashes with
+    # ``RuntimeError: Event loop is closed`` after every login failure
+    # (Phase 8 dogfood 2026-05-11).
+    async def _run() -> None:
+        try:
+            await do_login(
                 flow_client=flow_client,
                 profile_store=store,
                 profile_name=name,
@@ -157,12 +163,14 @@ def login(
                 scope=scope,
                 audience=audience,
             )
-        )
+        finally:
+            await flow_client.aclose()
+
+    try:
+        asyncio.run(_run())
     except DeviceFlowError as exc:
         typer.echo(f"Login failed: {exc}", err=True)
         raise typer.Exit(code=1) from None
-    finally:
-        asyncio.run(flow_client.aclose())
 
 
 __all__ = ["do_login", "login_app"]
