@@ -182,6 +182,80 @@ class TestDoLoginHappyPath:
         assert prof.tenant_id == "t-prod"  # untouched
         assert keyring_stub.store[("bsvibe", "prod")] == "bsv_sk_access"
         assert keyring_stub.store[("bsvibe", "prod.refresh")] == "bsv_rt_refresh"
+        # The login-on-existing-profile path also has to point the profile
+        # at the freshly-stored keyring entries; previously this branch
+        # silently no-op'd and the next CLI call 401'd because token_ref
+        # was still None on the existing record (Phase 8 dogfood
+        # 2026-05-11 finding #6).
+        assert prof.token_ref == "prod"
+        assert prof.refresh_token_ref == "prod"
+
+    async def test_keyring_write_failure_aborts_with_actionable_message(
+        self, store: ProfileStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Phase 8 dogfood (2026-05-11) finding #5 — when the keyring
+        backend refuses to store (macOS errSecInteractionNotAllowed in
+        non-GUI CLI context, missing libsecret in a slim container,
+        etc.), login MUST surface the failure and print the raw token
+        once so the operator isn't locked out. The old behaviour
+        printed 'Saved PAT to keyring' regardless and the next CLI
+        invocation 401'd with no clue why."""
+        from bsvibe_cli_base.login_cmd import do_login
+
+        # Stub keyring backend that always raises on set_password. Read
+        # path returns None to simulate 'never stored anything'.
+        class _RefusingKeyring:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, str]] = []
+
+            def set_password(self, service: str, username: str, _pw: str) -> None:
+                self.calls.append((service, username))
+                raise RuntimeError("Can't store password on keychain: (-25308, ...)")
+
+            def get_password(self, service: str, username: str) -> str | None:
+                return None
+
+            def delete_password(self, service: str, username: str) -> None:
+                return None
+
+        stub = _RefusingKeyring()
+        monkeypatch.setitem(__import__("sys").modules, "keyring", stub)
+
+        printed: list[str] = []
+        client = _build_flow_client(_approval_handler())
+        try:
+            with pytest.raises(DeviceFlowError) as exc_info:
+                await do_login(
+                    flow_client=client,
+                    profile_store=store,
+                    profile_name="prod",
+                    profile_url="https://api.prod.test",
+                    tenant_id="t-prod",
+                    sleep=_instant_sleep(),
+                    print_fn=printed.append,
+                )
+        finally:
+            await client.aclose()
+
+        # Auth side completed (the keyring is the only thing that
+        # broke), so the operator can still recover with the raw token.
+        out = "\n".join(printed)
+        assert "Could not save the access token to the system keyring" in out
+        assert "bsv_sk_access" in out, "raw access token must be surfaced"
+        assert "bsv_rt_refresh" in out, "raw refresh token must be surfaced"
+        assert "PYTHON_KEYRING_BACKEND" in out, "must hint at env-var workaround"
+        assert "BSVIBE_TOKEN" in out, "must hint at direct-token workaround"
+        # Critical anti-regression: never claim success when keyring refused.
+        assert "Saved PAT to keyring" not in out
+
+        # The profile MUST NOT be created with a stale token_ref pointing
+        # at an empty keyring slot.
+        from bsvibe_cli_base.profile import ProfileNotFoundError
+
+        with pytest.raises(ProfileNotFoundError):
+            store.get_profile("prod")
+
+        assert "keyring refused to store the token" in str(exc_info.value)
 
     async def test_passes_audience_to_request_code(self, keyring_stub: _MemoryKeyring, store: ProfileStore) -> None:
         """Audience must reach the auth server — not silently dropped."""

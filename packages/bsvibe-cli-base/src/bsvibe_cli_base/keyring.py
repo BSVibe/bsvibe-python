@@ -44,20 +44,26 @@ def _backend() -> Any | None:
         return None
 
 
-def set_token(profile_name: str, token: str) -> None:
+def set_token(profile_name: str, token: str) -> bool:
     """Persist ``token`` under ``(SERVICE, profile_name)``.
 
-    Backend errors are logged and dropped — the CLI never aborts because
-    libsecret is missing.
+    Returns ``True`` when the keyring write succeeded, ``False`` when the
+    backend is unavailable or refused. Backend errors are logged at debug
+    level — the CLI never aborts because libsecret is missing. Callers
+    that need to surface the failure (e.g. ``login``) MUST check the
+    return value; previously the silent-swallow path masked write
+    failures and the user saw a misleading 'saved' message.
     """
     backend = _backend()
     if backend is None:
-        return
+        return False
     try:
         backend.set_password(SERVICE, profile_name, token)
         logger.debug("keyring_token_set", profile=profile_name)
+        return True
     except Exception as exc:
-        logger.warning("keyring_set_failed", profile=profile_name, error=str(exc))
+        logger.debug("keyring_set_failed", profile=profile_name, error=str(exc))
+        return False
 
 
 def get_token(profile_name: str) -> str | None:
@@ -108,21 +114,23 @@ def resolve_token(profile: Profile) -> str | None:
     return profile.token_ref
 
 
-def set_refresh_token(profile_name: str, token: str) -> None:
+def set_refresh_token(profile_name: str, token: str) -> bool:
     """Persist a refresh token under ``(SERVICE, "{profile}.refresh")``.
 
-    Same fail-soft contract as :func:`set_token` — a missing keyring
-    backend or libsecret error is logged and dropped, never raised, so
-    CLI startup survives headless hosts.
+    Returns ``True`` on success, ``False`` when the backend is unavailable
+    or refused — same contract as :func:`set_token` so login can detect
+    partial failures (access saved but refresh dropped) and act on them.
     """
     backend = _backend()
     if backend is None:
-        return
+        return False
     try:
         backend.set_password(SERVICE, _refresh_username(profile_name), token)
         logger.debug("keyring_refresh_set", profile=profile_name)
+        return True
     except Exception as exc:
-        logger.warning("keyring_refresh_set_failed", profile=profile_name, error=str(exc))
+        logger.debug("keyring_refresh_set_failed", profile=profile_name, error=str(exc))
+        return False
 
 
 def get_refresh_token(profile_name: str) -> str | None:

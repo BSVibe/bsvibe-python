@@ -79,6 +79,28 @@ class ProfileStore:
         self._save(cfg)
         logger.info("profile_added", name=profile.name)
 
+    def update_profile(self, profile: Profile) -> None:
+        """Replace the existing profile of the same name in-place.
+
+        Used by ``login`` to bind a freshly-issued PAT to a pre-existing
+        profile entry (most operators run ``bsgateway login`` against
+        profiles they created beforehand with ``profile add``). The
+        previous structure had ``do_login`` no-op on existing profiles,
+        leaving ``token_ref`` at None — so the next CLI invocation
+        couldn't find the just-saved keyring entry and returned 401.
+        """
+        cfg = self._load()
+        for i, existing in enumerate(cfg.profiles):
+            if existing.name == profile.name:
+                cfg.profiles[i] = profile
+                self._save(cfg)
+                logger.info("profile_updated", name=profile.name)
+                return
+        raise ProfileNotFoundError(
+            f"Profile not found: {profile.name}",
+            context={"name": profile.name},
+        )
+
     def remove_profile(self, name: str) -> None:
         cfg = self._load()
         kept = [p for p in cfg.profiles if p.name != name]
