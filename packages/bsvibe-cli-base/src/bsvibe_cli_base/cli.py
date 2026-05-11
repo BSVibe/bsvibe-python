@@ -33,11 +33,25 @@ from typing import TYPE_CHECKING
 
 import structlog
 import typer
+from bsvibe_core import configure_logging
 
 from bsvibe_cli_base import keyring as keyring_mod
 from bsvibe_cli_base.config import Profile
 from bsvibe_cli_base.output import OutputFormatter
 from bsvibe_cli_base.profile import ProfileNotFoundError, ProfileStore
+
+# Configure structlog to write to stderr at import time so command output
+# on stdout stays parseable (`<cli> --output json | jq …`). Without this
+# the bsvibe-core default (or absence of any configure call) routes
+# structlog through PrintLoggerFactory(file=stdout), interleaving log
+# lines with the formatter's JSON / YAML / TSV / table output. Phase 8
+# dogfood (2026-05-11) hit this when piping `bsnexus … --output json
+# projects list` to a python -c JSON extractor.
+#
+# The choice of stream is configurable so tests can pass io.StringIO.
+# Console-style rendering (not JSON) is the CLI convention — operators
+# read logs in their terminal, not in a log aggregator.
+configure_logging(level="info", json_output=False, stream=sys.stderr)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from bsvibe_cli_base.device_flow import DeviceTokenGrant
