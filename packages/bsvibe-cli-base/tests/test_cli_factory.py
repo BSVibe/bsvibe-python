@@ -387,3 +387,65 @@ class TestKeyringPersistCallback:
         result = runner.invoke(app, ["show"])
         assert result.exit_code == 0
         assert captured["obj"].keyring_persist_callback is None
+
+
+class TestStdoutCleanForJsonPipelines:
+    """Phase 8 dogfood (2026-05-11) finding #7 — structlog logs went to
+    stdout, interleaving with `--output json` payloads and breaking
+    downstream `jq` / `python -c json.loads(…)` pipelines. Pin the
+    invariant: stdout carries the subcommand payload; structlog carries
+    the operator-facing log noise to stderr."""
+
+    def test_structlog_goes_to_stderr_not_stdout(
+        self, store: ProfileStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """End-to-end check via a real subprocess — pytest's capfd/capsys
+        can't see structlog's PrintLogger output reliably because the
+        factory binds to ``sys.stderr`` at import time, before pytest
+        installs its capture. A subprocess with redirected fds is the
+        only way to observe what an operator's shell would see."""
+        import subprocess
+        import sys as _sys
+        import textwrap
+
+        # Tiny runner: import cli_app, register a command, invoke it.
+        # Stdout is the formatter payload; stderr is the structlog logs.
+        runner = tmp_path / "runner.py"
+        runner.write_text(
+            textwrap.dedent(
+                """
+                import sys, structlog, typer
+                from pathlib import Path
+                from bsvibe_cli_base.cli import cli_app
+                from bsvibe_cli_base.profile import ProfileStore
+
+                app = cli_app(name="demo", profile_store=ProfileStore(path=Path(sys.argv[1])))
+
+                @app.command()
+                def show(ctx: typer.Context) -> None:
+                    typer.echo("PAYLOAD_LINE")
+                    structlog.get_logger("demo").warning("background_event", x=1)
+
+                app(["show"])
+                """
+            )
+        )
+        cfg_path = tmp_path / "config.yaml"
+        result = subprocess.run(
+            [_sys.executable, str(runner), str(cfg_path)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+        assert "PAYLOAD_LINE" in result.stdout, (
+            f"stdout missing subcommand payload — formatter output regressed: {result.stdout!r}"
+        )
+        assert "background_event" not in result.stdout, (
+            f"structlog leaked to stdout (breaks `--output json | jq`): {result.stdout!r}"
+        )
+        assert "background_event" in result.stderr, (
+            f"structlog warning vanished entirely; should be on stderr: {result.stderr!r}"
+        )
+        # Sanity: the subcommand payload didn't leak into stderr either.
+        assert "PAYLOAD_LINE" not in result.stderr
