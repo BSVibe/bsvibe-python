@@ -90,9 +90,14 @@ class IntrospectionCache:
         self,
         ttl_s: int = 60,
         clock: Callable[[], float] | None = None,
+        wall_clock: Callable[[], float] | None = None,
     ) -> None:
         self.ttl_s = ttl_s
         self._clock = clock or time.monotonic
+        # ``wall_clock`` is epoch seconds (time.time semantics), needed
+        # alongside the monotonic cache clock to compare against the token's
+        # own ``exp`` claim — RFC 7662 §2.2 epoch seconds. See ``set()``.
+        self._wall_clock = wall_clock or time.time
         self._lock = asyncio.Lock()
         self._store: dict[str, _IntrospectionEntry] = {}
 
@@ -108,9 +113,25 @@ class IntrospectionCache:
 
     async def set(self, token_sha256: str, response: IntrospectionResponse) -> None:
         async with self._lock:
+            # Cap cache entry lifetime at the token's own ``exp`` (RFC 7662
+            # §2.2 epoch seconds) so a cached ``active=True`` response can
+            # never outlive the token itself. Round 4 Finding 17 (sage
+            # accepted a 50min-expired PAT) was caused by the cache TTL
+            # exceeding the token's remaining lifetime: the introspection
+            # server correctly returned active=True at first call, the
+            # response was cached for the full cache TTL, and subsequent
+            # requests after token exp hit a stale active=True cache entry.
+            #
+            # Tokens without ``exp`` (or inactive responses, which usually
+            # omit it) fall back to the configured cache TTL.
+            ttl = float(self.ttl_s)
+            if response.active and response.exp is not None:
+                token_remaining = float(response.exp) - self._wall_clock()
+                if token_remaining < ttl:
+                    ttl = max(0.0, token_remaining)
             self._store[token_sha256] = _IntrospectionEntry(
                 response=response,
-                expires_at=self._clock() + self.ttl_s,
+                expires_at=self._clock() + ttl,
             )
 
     async def invalidate(self, token_sha256: str) -> None:
