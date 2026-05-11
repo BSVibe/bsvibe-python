@@ -6,12 +6,14 @@ the user authenticates in their browser, and meanwhile the CLI polls
 ``/oauth/device/token`` until the server returns a fresh access /
 refresh token pair.
 
-The wire format follows the BSVibe convention rather than the bare RFC
-8628 ``error`` field — :func:`poll_token` inspects ``status``:
+Wire format — RFC 8628 §3.5 standard polling responses:
 
-* ``pending`` / ``slow_down``  → keep polling.
-* ``approved`` / ``granted``   → response carries the grant; flow done.
-* anything else                → fail fast via :class:`DeviceFlowError`.
+* ``200`` + ``{access_token, ...}``   → flow complete (success).
+* ``400`` + ``{"error": "authorization_pending"}`` → user not yet approved,
+                                                    keep polling.
+* ``400`` + ``{"error": "slow_down"}`` → bump interval by 5s, keep polling.
+* ``400`` + ``{"error": "access_denied"}`` / ``"expired_token"`` /
+  ``"invalid_grant"``                 → terminal :class:`DeviceFlowError`.
 
 If the wall clock exceeds :attr:`DeviceCode.expires_in`, the poller
 raises :class:`DeviceFlowTimeoutError` instead of polling forever.
@@ -34,8 +36,8 @@ from bsvibe_core.http import HttpClientBase
 
 logger = structlog.get_logger(__name__)
 
-_DONE_STATES: frozenset[str] = frozenset({"approved", "granted"})
-_PENDING_STATES: frozenset[str] = frozenset({"pending", "slow_down"})
+# RFC 8628 §3.5 — transient errors the client must tolerate and re-poll on.
+_PENDING_ERRORS: frozenset[str] = frozenset({"authorization_pending", "slow_down"})
 _SLOW_DOWN_BUMP_S: float = 5.0
 
 
@@ -129,11 +131,13 @@ class DeviceFlowClient(HttpClientBase):
         """Poll the token endpoint until approval, denial, or expiry.
 
         Polls immediately (a freshly authorized session may already be
-        ready) and sleeps ``interval`` seconds between attempts. On
-        ``slow_down`` the interval is bumped before the next sleep, per
-        RFC 8628 §3.5. The deadline is checked after each poll so that
-        an in-flight request returning ``approved`` near expiry still
-        succeeds.
+        ready) and sleeps ``interval`` seconds between attempts. Treats
+        the wire per RFC 8628 §3.5 — ``200`` carries the grant,
+        ``400 {"error": "authorization_pending"}`` means keep polling,
+        ``400 {"error": "slow_down"}`` means keep polling at a bumped
+        interval, any other 4xx is terminal. The deadline is checked
+        after each poll so that an in-flight request returning the grant
+        near expiry still succeeds.
         """
         interval = float(code.interval)
         start = self._monotonic()
@@ -148,22 +152,26 @@ class DeviceFlowClient(HttpClientBase):
                     "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
                 },
             )
-            if resp.status_code >= 400:
-                raise DeviceFlowError(f"device_token request failed: {resp.status_code} {_error_msg(resp)}")
 
-            payload = resp.json()
-            status = str(payload.get("status", "")).lower()
-
-            if status in _DONE_STATES:
+            if resp.status_code < 400:
+                payload = resp.json()
+                access = payload.get("access_token")
+                if not access:
+                    raise DeviceFlowError(f"device_token returned 2xx without access_token: {payload!r}")
                 return DeviceTokenGrant(
-                    access_token=payload["access_token"],
+                    access_token=access,
                     refresh_token=payload.get("refresh_token"),
                     expires_in=payload.get("expires_in"),
                     token_type=payload.get("token_type", "Bearer"),
                 )
-            if status not in _PENDING_STATES:
-                raise DeviceFlowError(f"device authorization rejected: status={status!r}")
-            if status == "slow_down":
+
+            # 4xx/5xx — inspect RFC 8628 error code.
+            error_code = _error_code(resp)
+            if error_code not in _PENDING_ERRORS:
+                raise DeviceFlowError(
+                    f"device_token request failed: {resp.status_code} {error_code or _error_msg(resp)}"
+                )
+            if error_code == "slow_down":
                 interval += _SLOW_DOWN_BUMP_S
                 logger.info("device_flow_slow_down", new_interval_s=interval)
 
@@ -181,6 +189,20 @@ def _error_msg(resp: httpx.Response) -> str:
     if isinstance(data, dict):
         return str(data.get("error") or data.get("message") or data)
     return str(data)
+
+
+def _error_code(resp: httpx.Response) -> str | None:
+    """Return the RFC 8628 ``error`` field (e.g. ``"authorization_pending"``)
+    from a 4xx response body, or ``None`` if the body isn't a JSON object with
+    an ``error`` string."""
+    try:
+        data = resp.json()
+    except ValueError:
+        return None
+    if isinstance(data, dict):
+        err = data.get("error")
+        return err if isinstance(err, str) else None
+    return None
 
 
 __all__ = [

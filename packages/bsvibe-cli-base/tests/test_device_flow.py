@@ -1,21 +1,21 @@
 """Tests for :mod:`bsvibe_cli_base.device_flow`.
 
 The device flow client is the bootstrap path for first-run authentication
-against ``auth.bsvibe.dev``. It implements the BSVibe convention:
+against ``auth.bsvibe.dev``. It implements RFC 8628 polling semantics:
 
   1. ``POST /oauth/device/code`` returns ``{device_code, user_code,
      verification_uri, expires_in, interval}``.
   2. The CLI prints the user code + URL to the terminal so the human
      authenticates in a browser.
-  3. ``POST /oauth/device/token`` is polled every ``interval`` seconds;
-     payload encodes ``status``:
+  3. ``POST /oauth/device/token`` is polled every ``interval`` seconds:
 
-       * ``pending``    → keep polling.
-       * ``slow_down``  → keep polling, server is asking for backoff.
-       * ``approved`` / ``granted`` → response carries ``access_token``
-         + ``refresh_token``; flow is done.
-       * anything else  → fail fast (``access_denied``, ``expired_token``,
-         transport errors, etc.).
+       * ``200`` + ``{access_token, ...}``                → flow done.
+       * ``400`` + ``{"error": "authorization_pending"}`` → keep polling.
+       * ``400`` + ``{"error": "slow_down"}``             → keep polling
+         at a bumped interval.
+       * ``400`` + any other ``error``                    → terminal
+         :class:`DeviceFlowError` (``access_denied``, ``expired_token``,
+         ``invalid_grant``, …).
 
   4. If the wall-clock exceeds ``expires_in``, raise
      :class:`DeviceFlowTimeoutError`.
@@ -133,16 +133,17 @@ class TestRequestCode:
 
 class TestPollToken:
     async def test_pending_then_approved(self) -> None:
+        """RFC 8628 §3.5 — pending returns 400 with error=authorization_pending;
+        approval returns 200 with the grant body."""
         polls = {"n": 0}
 
         def handler(request: httpx.Request) -> httpx.Response:
             polls["n"] += 1
             if polls["n"] < 3:
-                return httpx.Response(200, json={"status": "pending"})
+                return httpx.Response(400, json={"error": "authorization_pending"})
             return httpx.Response(
                 200,
                 json={
-                    "status": "approved",
                     "access_token": "at-1",
                     "refresh_token": "rt-1",
                     "expires_in": 3600,
@@ -171,16 +172,17 @@ class TestPollToken:
         assert delays == [5, 5]
 
     async def test_slow_down_increases_interval(self) -> None:
+        """RFC 8628 §3.5 — slow_down returns 400 with error=slow_down and
+        instructs the client to bump the poll interval."""
         polls = {"n": 0}
 
         def handler(request: httpx.Request) -> httpx.Response:
             polls["n"] += 1
             if polls["n"] == 1:
-                return httpx.Response(200, json={"status": "slow_down"})
+                return httpx.Response(400, json={"error": "slow_down"})
             return httpx.Response(
                 200,
                 json={
-                    "status": "granted",
                     "access_token": "at-2",
                     "refresh_token": "rt-2",
                 },
@@ -207,8 +209,10 @@ class TestPollToken:
         assert delays[0] >= 10
 
     async def test_access_denied_raises(self) -> None:
+        """RFC 8628 §3.5 — access_denied is terminal."""
+
         def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"status": "access_denied"})
+            return httpx.Response(400, json={"error": "access_denied"})
 
         client = _build_client(handler)
         sleep, _delays = _sleep_recorder()
@@ -228,7 +232,7 @@ class TestPollToken:
 
     async def test_polling_times_out_when_expires_in_elapses(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"status": "pending"})
+            return httpx.Response(400, json={"error": "authorization_pending"})
 
         client = _build_client(handler)
         elapsed = {"t": 0.0}
