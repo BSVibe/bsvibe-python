@@ -56,25 +56,80 @@ async def do_login(
 
     grant = await flow_client.poll_token(code, sleep=sleep)
 
-    keyring_mod.set_token(profile_name, grant.access_token)
+    # Persist tokens to the system keyring BEFORE updating the profile —
+    # if the keyring backend refuses (Phase 8 dogfood 2026-05-11 hit
+    # macOS errSecInteractionNotAllowed -25308 from a non-GUI CLI
+    # context), the previous code printed 'Saved PAT to keyring'
+    # anyway and the next CLI invocation 401'd with no clue why.
+    access_saved = keyring_mod.set_token(profile_name, grant.access_token)
+    refresh_saved = False
     if grant.refresh_token:
-        keyring_mod.set_refresh_token(profile_name, grant.refresh_token)
+        refresh_saved = keyring_mod.set_refresh_token(profile_name, grant.refresh_token)
 
-    try:
-        profile_store.get_profile(profile_name)
-        # Existing profile — keep its url/tenant, only token refs change.
-    except ProfileNotFoundError:
-        profile_store.add_profile(
-            Profile(
-                name=profile_name,
-                url=profile_url,
-                tenant_id=tenant_id,
-                default=True,
-                token_ref=profile_name,
-                refresh_token_ref=profile_name if grant.refresh_token else None,
-            )
+    if not access_saved:
+        # Surface the failure with an actionable next step + the raw token
+        # so the operator isn't locked out. The token is shown ONCE on
+        # stdout — secure-paste-then-clear is the explicit contract.
+        print_fn("")
+        print_fn(
+            "⚠️  Could not save the access token to the system keyring "
+            "(backend unavailable or refused — see `python -m keyring "
+            "--list-backends`)."
         )
-        profile_store.set_active(profile_name)
+        print_fn("")
+        print_fn("    Try one of:")
+        print_fn("      • macOS: run `security unlock-keychain` then retry")
+        print_fn("      • Force a file backend (less secure, plaintext):")
+        print_fn("          export PYTHON_KEYRING_BACKEND=keyrings.alt.file.PlaintextKeyring")
+        print_fn("          (install: `pip install keyrings.alt`)")
+        print_fn("      • Pass the token explicitly each call:")
+        print_fn("          export BSVIBE_TOKEN='<paste below>'")
+        print_fn("")
+        print_fn("    Raw access token (NOT saved — copy now):")
+        print_fn(f"      {grant.access_token}")
+        if grant.refresh_token:
+            print_fn("    Raw refresh token (NOT saved):")
+            print_fn(f"      {grant.refresh_token}")
+        print_fn("")
+        raise DeviceFlowError(
+            "Login completed at the auth server but the local keyring "
+            "refused to store the token — see instructions above."
+        )
+
+    if grant.refresh_token and not refresh_saved:
+        # Access saved but refresh dropped — annoying (no auto-rotation)
+        # but not fatal. Continue with a clear warning instead of
+        # silently shipping a profile that promises refresh but lacks it.
+        print_fn(
+            "⚠️  Access token saved, but refresh token write failed. "
+            "Auto-rotation will not work; re-run `login` when the access "
+            "token expires."
+        )
+
+    new_profile = Profile(
+        name=profile_name,
+        url=profile_url,
+        tenant_id=tenant_id,
+        default=True,
+        token_ref=profile_name,
+        refresh_token_ref=profile_name if refresh_saved else None,
+    )
+    try:
+        existing = profile_store.get_profile(profile_name)
+        # Preserve operator-set fields (url, tenant_id) that login wasn't
+        # asked to overwrite — only refresh token refs change here.
+        merged = Profile(
+            name=existing.name,
+            url=existing.url if not profile_url or profile_url == existing.url else profile_url,
+            tenant_id=existing.tenant_id if tenant_id is None else tenant_id,
+            default=True,
+            token_ref=profile_name,
+            refresh_token_ref=profile_name if refresh_saved else None,
+        )
+        profile_store.update_profile(merged)
+    except ProfileNotFoundError:
+        profile_store.add_profile(new_profile)
+    profile_store.set_active(profile_name)
 
     print_fn(f"Saved PAT to keyring for profile '{profile_name}'.")
 
