@@ -134,13 +134,10 @@ def verify_service_jwt(
 
     # Defense-in-depth: re-check scope-audience binding even though the issuer
     # already enforces it. A misconfigured issuer must never silently widen
-    # privilege. Round 5: accept BOTH the legacy ``<aud>.<action>`` grammar
-    # and the new MCP ``<aud>:<resource>`` grammar — Step 5 of the cutover
-    # drops the legacy.
-    legacy_prefix = f"{payload.aud}."
-    mcp_prefix = f"{payload.aud}:"
+    # privilege. Round 5 final: MCP grammar only (``<aud>:<resource>``).
+    audience_prefix = f"{payload.aud}:"
     for scope in payload.scopes:
-        if not (scope.startswith(legacy_prefix) or scope.startswith(mcp_prefix)):
+        if not scope.startswith(audience_prefix):
             raise AuthError(
                 f"service JWT scope {scope!r} does not match audience {payload.aud!r}",
             )

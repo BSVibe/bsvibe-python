@@ -73,8 +73,8 @@ def make_service_jwt(service_signing_secret: str, issuer: str, now: int):
 
     def _make(
         sub: str = "service:bsnexus",
-        aud: str = "bsage",
-        scope: str = "bsage.read bsage.write",
+        aud: str = "sage",
+        scope: str = "sage:read sage:write",
         exp_offset: int = 3600,
         tenant_id: str | None = None,
         token_type: str | None = "service",

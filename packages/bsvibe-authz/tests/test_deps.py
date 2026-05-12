@@ -81,7 +81,7 @@ def _build_app(
 
     @app.get("/internal/data")
     async def internal_data(
-        svc: ServiceKey = Depends(ServiceKeyAuth(audience="bsage")),
+        svc: ServiceKey = Depends(ServiceKeyAuth(audience="sage")),
     ) -> dict:
         return {"sub": svc.sub, "scope": svc.scope}
 
@@ -140,15 +140,15 @@ def test_service_key_auth_accepts_valid_service_token(deps_settings, make_servic
     with TestClient(app) as client:
         token = make_service_jwt(
             sub="service:bsnexus",
-            aud="bsage",
-            scope="bsage.read bsage.write",
+            aud="sage",
+            scope="sage:read sage:write",
             tenant_id="t-1",
         )
         resp = client.get("/internal/data", headers=_bearer(token))
         assert resp.status_code == 200
         body = resp.json()
         assert body["sub"] == "service:bsnexus"
-        assert body["scope"] == "bsage.read bsage.write"
+        assert body["scope"] == "sage:read sage:write"
 
 
 def test_service_key_auth_rejects_user_jwt(deps_settings, make_user_jwt) -> None:
@@ -162,7 +162,7 @@ def test_service_key_auth_rejects_user_jwt(deps_settings, make_user_jwt) -> None
 def test_service_key_auth_rejects_wrong_audience(deps_settings, make_service_jwt) -> None:
     app = _build_app(deps_settings)
     with TestClient(app) as client:
-        token = make_service_jwt(aud="bsgateway")
+        token = make_service_jwt(aud="gateway")
         resp = client.get("/internal/data", headers=_bearer(token))
         assert resp.status_code == 401
 
@@ -238,7 +238,7 @@ def opaque_settings(deps_settings: Settings) -> Settings:
     return deps_settings.model_copy(
         update={
             "introspection_url": "https://auth.bsvibe.dev/oauth/introspect",
-            "introspection_client_id": "bsage",
+            "introspection_client_id": "sage",
             "introspection_client_secret": "shh",
         },
     )

@@ -13,47 +13,23 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-# Round 5 legacy-removal transition: accept BOTH the legacy ``bs*`` REST
-# audiences AND the new bare-name MCP audiences during the multi-step
-# migration. Step 5 will drop the legacy entries once all producers + DB
-# rows have flipped.
-ServiceAudience = Literal[
-    # Legacy (transitional — slated for removal):
-    "bsage",
-    "bsgateway",
-    "bsupervisor",
-    "bsnexus",
-    # New MCP-aligned audiences:
-    "sage",
-    "gateway",
-    "supervisor",
-    "nexus",
-]
+# Round 5 final: the only legitimate service-token audiences are the 4
+# MCP-aligned bare names. The legacy ``bs*``-prefixed audiences were
+# removed in Step 5 of the cutover (PR following bsvibe-authz 0.9.2).
+ServiceAudience = Literal["sage", "gateway", "supervisor", "nexus"]
 SERVICE_AUDIENCES: frozenset[str] = frozenset(
-    (
-        "bsage",
-        "bsgateway",
-        "bsupervisor",
-        "bsnexus",
-        "sage",
-        "gateway",
-        "supervisor",
-        "nexus",
-    )
+    ("sage", "gateway", "supervisor", "nexus")
 )
 TenantRole = Literal["owner", "admin", "member", "viewer"]
 TenantPlan = Literal["free", "pro", "team", "enterprise"]
 TenantType = Literal["personal", "org"]
 
 PERMISSION_PATTERN = re.compile(r"^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$")
-# Service-token scope grammar — accept either:
-#   * Legacy ``<audience>.<action>`` (e.g. ``bsupervisor.write``) for the
-#     old bs* REST audiences, transitional.
-#   * MCP ``<audience>:<resource>`` (e.g. ``gateway:*``) for the new
-#     bare-name audiences. Resource accepts ``*``, identifiers, and
-#     dotted/dashed identifiers (``audit.write``).
+# Service-token scope grammar — MCP only: ``<audience>:<resource>`` with
+# resource = ``*``, identifier, or dotted/dashed identifier
+# (``gateway:*``, ``supervisor:audit.write``).
 SCOPE_PATTERN = re.compile(
-    r"^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*|:(?:\*|[a-z][a-z0-9-]*(?:[._-][a-z0-9]+)*))$"
+    r"^[a-z][a-z0-9-]*:(?:\*|[a-z][a-z0-9-]*(?:[._-][a-z0-9]+)*)$"
 )
 
 

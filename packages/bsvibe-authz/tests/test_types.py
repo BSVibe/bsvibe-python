@@ -49,17 +49,17 @@ def test_service_token_payload_matches_bsvibe_auth_pr3_contract() -> None:
     payload = ServiceTokenPayload(
         iss="https://auth.bsvibe.dev",
         sub="service:bsnexus",
-        aud="bsage",
-        scope="bsage.read bsage.write",
+        aud="sage",
+        scope="sage:read sage:write",
         iat=1733823600,
         exp=1733827200,
         token_type="service",
         tenant_id="t-1",
     )
-    assert payload.aud == "bsage"
-    assert payload.scopes == ["bsage.read", "bsage.write"]
-    assert payload.has_scope("bsage.read") is True
-    assert payload.has_scope("bsgateway.read") is False
+    assert payload.aud == "sage"
+    assert payload.scopes == ["sage:read", "sage:write"]
+    assert payload.has_scope("sage:read") is True
+    assert payload.has_scope("gateway:read") is False
 
 
 def test_service_token_payload_rejects_invalid_audience() -> None:
@@ -70,7 +70,7 @@ def test_service_token_payload_rejects_invalid_audience() -> None:
             iss="https://auth.bsvibe.dev",
             sub="service:bsnexus",
             aud="invalid-aud",  # type: ignore[arg-type]
-            scope="bsage.read",
+            scope="sage:read",
             iat=1,
             exp=2,
             token_type="service",
@@ -84,8 +84,8 @@ def test_service_token_payload_rejects_wrong_token_type() -> None:
         ServiceTokenPayload(
             iss="https://auth.bsvibe.dev",
             sub="service:x",
-            aud="bsage",
-            scope="bsage.read",
+            aud="sage",
+            scope="sage:read",
             iat=1,
             exp=2,
             token_type="user",  # type: ignore[arg-type]
@@ -142,7 +142,7 @@ def test_introspection_response_full_active_form() -> None:
             "active": True,
             "sub": "user-123",
             "tenant": "t-1",
-            "aud": ["bsage", "bsgateway"],
+            "aud": ["sage", "gateway"],
             "scope": ["gateway:models:read", "gateway:models:write"],
             "exp": 1733827200,
             "client_id": "client-abc",
@@ -152,7 +152,7 @@ def test_introspection_response_full_active_form() -> None:
     assert r.active is True
     assert r.sub == "user-123"
     assert r.tenant == "t-1"
-    assert r.aud == ["bsage", "bsgateway"]
+    assert r.aud == ["sage", "gateway"]
     assert r.scope == ["gateway:models:read", "gateway:models:write"]
     assert r.exp == 1733827200
     assert r.client_id == "client-abc"
