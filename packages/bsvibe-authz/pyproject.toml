@@ -1,6 +1,6 @@
 [project]
 name = "bsvibe-authz"
-version = "0.9.2"
+version = "1.0.0"
 description = "BSVibe shared authorization library — JWT verification, OpenFGA client, FastAPI deps"
 requires-python = ">=3.11"
 dependencies = [

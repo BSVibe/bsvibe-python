@@ -31,14 +31,9 @@ from .types import SERVICE_AUDIENCES
 
 logger = structlog.get_logger(__name__)
 
-# Round 5 transition: accept either legacy ``<aud>.<action>`` or new MCP
-# ``<aud>:<resource>`` grammar. Step 5 final tag drops the legacy form.
-_LEGACY_SCOPE_PATTERN = re.compile(r"^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$")
-_MCP_SCOPE_PATTERN = re.compile(
-    r"^[a-z][a-z0-9-]*:(?:\*|[a-z][a-z0-9-]*(?:[._-][a-z0-9]+)*)$"
-)
+# Round 5 final: MCP scope grammar only — ``<audience>:<resource>``.
 _SCOPE_PATTERN = re.compile(
-    r"^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*|:(?:\*|[a-z][a-z0-9-]*(?:[._-][a-z0-9]+)*))$"
+    r"^[a-z][a-z0-9-]*:(?:\*|[a-z][a-z0-9-]*(?:[._-][a-z0-9]+)*)$"
 )
 
 
@@ -70,21 +65,12 @@ class ServiceTokenMinter(HttpClientBase):
         scopes = list(scope)
         if not scopes:
             raise ValueError("scope must not be empty")
-        legacy_prefix = f"{audience}."
-        mcp_prefix = f"{audience}:"
+        prefix = f"{audience}:"
         for s in scopes:
-            if _LEGACY_SCOPE_PATTERN.match(s):
-                if not s.startswith(legacy_prefix):
-                    raise ValueError(
-                        f"scope {s!r} does not match audience {audience!r}"
-                    )
-            elif _MCP_SCOPE_PATTERN.match(s):
-                if not s.startswith(mcp_prefix):
-                    raise ValueError(
-                        f"scope {s!r} does not match audience {audience!r}"
-                    )
-            else:
+            if not _SCOPE_PATTERN.match(s):
                 raise ValueError(f"invalid scope identifier: {s!r}")
+            if not s.startswith(prefix):
+                raise ValueError(f"scope {s!r} does not match audience {audience!r}")
 
         if not client_id or not client_secret:
             raise ValueError("client_id and client_secret must be non-empty")
