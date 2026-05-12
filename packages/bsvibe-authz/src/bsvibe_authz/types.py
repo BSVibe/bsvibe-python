@@ -13,14 +13,48 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-ServiceAudience = Literal["bsage", "bsgateway", "bsupervisor", "bsnexus"]
-SERVICE_AUDIENCES: frozenset[str] = frozenset(("bsage", "bsgateway", "bsupervisor", "bsnexus"))
+# Round 5 legacy-removal transition: accept BOTH the legacy ``bs*`` REST
+# audiences AND the new bare-name MCP audiences during the multi-step
+# migration. Step 5 will drop the legacy entries once all producers + DB
+# rows have flipped.
+ServiceAudience = Literal[
+    # Legacy (transitional — slated for removal):
+    "bsage",
+    "bsgateway",
+    "bsupervisor",
+    "bsnexus",
+    # New MCP-aligned audiences:
+    "sage",
+    "gateway",
+    "supervisor",
+    "nexus",
+]
+SERVICE_AUDIENCES: frozenset[str] = frozenset(
+    (
+        "bsage",
+        "bsgateway",
+        "bsupervisor",
+        "bsnexus",
+        "sage",
+        "gateway",
+        "supervisor",
+        "nexus",
+    )
+)
 TenantRole = Literal["owner", "admin", "member", "viewer"]
 TenantPlan = Literal["free", "pro", "team", "enterprise"]
 TenantType = Literal["personal", "org"]
 
 PERMISSION_PATTERN = re.compile(r"^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$")
-SCOPE_PATTERN = re.compile(r"^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$")
+# Service-token scope grammar — accept either:
+#   * Legacy ``<audience>.<action>`` (e.g. ``bsupervisor.write``) for the
+#     old bs* REST audiences, transitional.
+#   * MCP ``<audience>:<resource>`` (e.g. ``gateway:*``) for the new
+#     bare-name audiences. Resource accepts ``*``, identifiers, and
+#     dotted/dashed identifiers (``audit.write``).
+SCOPE_PATTERN = re.compile(
+    r"^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*|:(?:\*|[a-z][a-z0-9-]*(?:[._-][a-z0-9]+)*))$"
+)
 
 
 @dataclass(frozen=True, slots=True)
