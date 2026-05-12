@@ -15,7 +15,6 @@ Two distinct flows
 from __future__ import annotations
 
 import hashlib
-import hmac
 from typing import TYPE_CHECKING, Any
 
 import jwt
@@ -171,31 +170,6 @@ async def verify_opaque_token(
         active_tenant_id=response.tenant,
         scope=list(response.scope or []),
         is_service=False,
-        email=None,
-    )
-
-
-def verify_bootstrap_token(token: str, settings: Settings) -> User:
-    """Verify a ``bsv_admin_*`` bootstrap token via constant-time digest compare.
-
-    Returns an admin :class:`User` (``id='bootstrap'``, ``scope=['*']``) on
-    match. Raises :class:`AuthError` when the digest does not match or when
-    ``settings.bootstrap_token_hash`` is empty (bootstrap path disabled).
-    """
-    expected = settings.bootstrap_token_hash
-    if not expected:
-        raise AuthError("bootstrap token path is not configured")
-
-    actual = hashlib.sha256(token.encode()).hexdigest()
-    if not hmac.compare_digest(actual, expected):
-        logger.warning("bootstrap_token_mismatch")
-        raise AuthError("bootstrap token does not match")
-
-    logger.info("bootstrap_token_accepted")
-    return User(
-        id="bootstrap",
-        scope=["*"],
-        is_service=True,
         email=None,
     )
 

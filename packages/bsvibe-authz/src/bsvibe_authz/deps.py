@@ -28,7 +28,6 @@ import jwt as _jwt
 from .auth import (
     AuthError,
     parse_user_token,
-    verify_bootstrap_token,
     verify_opaque_token,
     verify_service_jwt,
     verify_user_jwt,
@@ -39,7 +38,6 @@ from .introspection import IntrospectionClient
 from .settings import Settings, get_settings
 from .types import ServiceAudience, ServiceTokenPayload, User
 
-BOOTSTRAP_TOKEN_PREFIX = "bsv_admin_"
 OPAQUE_TOKEN_PREFIX = "bsv_sk_"
 
 
@@ -212,8 +210,6 @@ async def get_current_user(
     if demo_user is not None:
         return demo_user
     try:
-        if token.startswith(BOOTSTRAP_TOKEN_PREFIX):
-            return verify_bootstrap_token(token, settings)
         if token.startswith(OPAQUE_TOKEN_PREFIX) and introspection_client is not None:
             return await verify_opaque_token(token, introspection_client, introspection_cache)
         try:
@@ -221,7 +217,7 @@ async def get_current_user(
         except AuthError:
             # PAT JWTs from the device-authorization grant are signed with
             # SERVICE_TOKEN_SIGNING_SECRET (not USER_JWT_SECRET), so they fail
-            # `verify_user_jwt`. The /api/tokens/introspect endpoint accepts
+            # `verify_user_jwt`. The `/oauth/introspect` endpoint accepts
             # them by jti — fall through when introspection is configured.
             if introspection_client is not None and _looks_like_jwt(token):
                 return await verify_opaque_token(token, introspection_client, introspection_cache)
@@ -366,18 +362,17 @@ class ServiceKeyAuth:
 
 
 # ---------------------------------------------------------------------------
-# require_scope — opaque/bootstrap-token scope guard
+# require_scope — opaque-token scope guard
 # ---------------------------------------------------------------------------
 def _scope_grants(user_scopes: list[str], required: str) -> bool:
     """Check whether ``user_scopes`` grant ``required``.
 
     Rules:
-    - ``"*"`` grants any required scope.
     - exact match.
     - prefix wildcard: ``"gateway:*"`` grants ``"gateway:models:write"``.
     """
     for granted in user_scopes:
-        if granted == "*" or granted == required:
+        if granted == required:
             return True
         if granted.endswith(":*") and required.startswith(granted[:-1]):
             return True
@@ -387,8 +382,8 @@ def _scope_grants(user_scopes: list[str], required: str) -> bool:
 def require_scope(required: str) -> Callable[..., Awaitable[None]]:
     """Build a dependency that asserts ``required`` is in the user's scope.
 
-    Raises 403 on miss. Designed for opaque-token / bootstrap flows where the
-    OpenFGA model is bypassed; for tuple-based checks use ``require_permission``.
+    Raises 403 on miss. Designed for opaque-token flows where the OpenFGA
+    model is bypassed; for tuple-based checks use ``require_permission``.
     """
     if not required:
         raise ValueError("require_scope: required scope must not be empty")

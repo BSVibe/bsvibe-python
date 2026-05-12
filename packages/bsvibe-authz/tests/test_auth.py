@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import time
 from unittest.mock import AsyncMock
 
@@ -440,60 +439,3 @@ async def test_verify_opaque_token_caches_inactive_response(opaque_cache) -> Non
             await verify_opaque_token("bsv_sk_revoked", client, opaque_cache)
 
     client.introspect.assert_awaited_once()
-
-
-# ---------------------------------------------------------------------------
-# verify_bootstrap_token (HMAC-compare against sha256 hex digest)
-# ---------------------------------------------------------------------------
-
-
-def _bootstrap_settings(token_hash: str = "") -> "object":  # noqa: F821
-    from bsvibe_authz.settings import Settings
-
-    return Settings(  # type: ignore[call-arg]
-        bsvibe_auth_url="https://auth.bsvibe.dev",
-        openfga_api_url="http://openfga.local:8080",
-        openfga_store_id="store-1",
-        openfga_auth_model_id="model-1",
-        service_token_signing_secret="s",
-        user_jwt_secret="u",
-        bootstrap_token_hash=token_hash,
-    )
-
-
-def test_verify_bootstrap_token_accepts_matching_hash() -> None:
-    from bsvibe_authz.auth import verify_bootstrap_token
-
-    token = "bsv_admin_correct-horse-battery-staple"
-    digest = hashlib.sha256(token.encode()).hexdigest()
-    settings = _bootstrap_settings(token_hash=digest)
-
-    user = verify_bootstrap_token(token, settings)
-
-    assert user.id == "bootstrap"
-    assert user.scope == ["*"]
-    assert user.is_service is True
-
-
-def test_verify_bootstrap_token_rejects_mismatch() -> None:
-    from bsvibe_authz.auth import AuthError, verify_bootstrap_token
-
-    real = hashlib.sha256(b"bsv_admin_real").hexdigest()
-    settings = _bootstrap_settings(token_hash=real)
-
-    with pytest.raises(AuthError) as exc_info:
-        verify_bootstrap_token("bsv_admin_attacker", settings)
-
-    assert "bsv_admin_attacker" not in str(exc_info.value)
-
-
-def test_verify_bootstrap_token_rejects_when_hash_empty() -> None:
-    from bsvibe_authz.auth import AuthError, verify_bootstrap_token
-
-    settings = _bootstrap_settings(token_hash="")
-
-    # Even if the attacker submits the empty string, an unset hash MUST reject.
-    with pytest.raises(AuthError):
-        verify_bootstrap_token("", settings)
-    with pytest.raises(AuthError):
-        verify_bootstrap_token("bsv_admin_anything", settings)
