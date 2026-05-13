@@ -24,7 +24,6 @@ from __future__ import annotations
 from .auth import (
     AuthError,
     parse_user_token,
-    verify_bootstrap_token,
     verify_opaque_token,
     verify_service_jwt,
     verify_user_jwt,
@@ -63,7 +62,7 @@ from .types import (
     User,
 )
 
-__version__ = "0.7.0"
+__version__ = "1.1.0"
 
 __all__ = [
     "AuthError",
@@ -104,7 +103,6 @@ __all__ = [
     "require_scope",
     "reset_settings_cache",
     "reset_singletons",
-    "verify_bootstrap_token",
     "verify_opaque_token",
     "verify_service_jwt",
     "verify_user_jwt",

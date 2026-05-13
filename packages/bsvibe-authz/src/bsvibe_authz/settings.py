@@ -76,10 +76,10 @@ class Settings(BaseSettings):
 
     # RFC 7662 OAuth2 token introspection (opaque session tokens issued by
     # BSVibe-Auth). Empty introspection_url disables the opaque-token path —
-    # the verifier then only handles JWT and bootstrap tokens.
+    # the verifier then only handles JWT tokens.
     #
     # `BSV_*` env aliases match the canonical names used in product docs
-    # (`BSV_INTROSPECTION_URL`, `BSV_BOOTSTRAP_TOKEN_HASH`, …). The
+    # (`BSV_INTROSPECTION_URL`, `BSV_INTROSPECTION_CLIENT_ID`, …). The
     # unprefixed names remain primary for backwards compatibility with
     # existing deployments.
     introspection_url: str = Field(
@@ -93,13 +93,6 @@ class Settings(BaseSettings):
     introspection_client_secret: str = Field(
         default="",
         validation_alias=AliasChoices("introspection_client_secret", "bsv_introspection_client_secret"),
-    )
-
-    # SHA-256 hex digest of the bootstrap admin token (`bsv_admin_<...>`).
-    # Empty disables the bootstrap path.
-    bootstrap_token_hash: str = Field(
-        default="",
-        validation_alias=AliasChoices("bootstrap_token_hash", "bsv_bootstrap_token_hash"),
     )
 
 

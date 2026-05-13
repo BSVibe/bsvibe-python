@@ -114,11 +114,9 @@ def reset_settings_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[pytest.Monke
         "INTROSPECTION_URL",
         "INTROSPECTION_CLIENT_ID",
         "INTROSPECTION_CLIENT_SECRET",
-        "BOOTSTRAP_TOKEN_HASH",
         "BSV_INTROSPECTION_URL",
         "BSV_INTROSPECTION_CLIENT_ID",
         "BSV_INTROSPECTION_CLIENT_SECRET",
-        "BSV_BOOTSTRAP_TOKEN_HASH",
     ]:
         monkeypatch.delenv(env, raising=False)
     yield monkeypatch

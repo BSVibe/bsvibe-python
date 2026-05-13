@@ -1,6 +1,5 @@
 """FastAPI Depends integration tests."""
 
-import hashlib
 from collections.abc import Callable
 from typing import Any
 
@@ -220,19 +219,8 @@ def test_tenant_scoped_403_when_no_active_tenant(deps_settings, user_jwt_secret,
 
 
 # ---------------------------------------------------------------------------
-# TASK-006: 3-way dispatch + require_scope
+# TASK-006: dispatch + require_scope
 # ---------------------------------------------------------------------------
-@pytest.fixture
-def bootstrap_token() -> str:
-    return "bsv_admin_supersecret"
-
-
-@pytest.fixture
-def bootstrap_settings(deps_settings: Settings, bootstrap_token: str) -> Settings:
-    digest = hashlib.sha256(bootstrap_token.encode()).hexdigest()
-    return deps_settings.model_copy(update={"bootstrap_token_hash": digest})
-
-
 @pytest.fixture
 def opaque_settings(deps_settings: Settings) -> Settings:
     return deps_settings.model_copy(
@@ -267,24 +255,6 @@ def _build_dispatch_app(settings: Settings, fake_client: Any | None = None) -> F
         return {"id": user.id, "scope": user.scope, "is_service": user.is_service}
 
     return app
-
-
-def test_dispatch_bootstrap_token(bootstrap_settings, bootstrap_token) -> None:
-    app = _build_dispatch_app(bootstrap_settings)
-    with TestClient(app) as client:
-        resp = client.get("/me", headers=_bearer(bootstrap_token))
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["id"] == "bootstrap"
-        assert body["scope"] == ["*"]
-        assert body["is_service"] is True
-
-
-def test_dispatch_bootstrap_token_wrong_value_returns_401(bootstrap_settings) -> None:
-    app = _build_dispatch_app(bootstrap_settings)
-    with TestClient(app) as client:
-        resp = client.get("/me", headers=_bearer("bsv_admin_wrong"))
-        assert resp.status_code == 401
 
 
 def test_dispatch_opaque_token_active(opaque_settings) -> None:
@@ -428,11 +398,14 @@ def test_require_scope_exact_match() -> None:
         assert resp.status_code == 200
 
 
-def test_require_scope_star_grants_all() -> None:
-    user = User(id="bootstrap", scope=["*"], is_service=True)
+def test_require_scope_star_no_longer_grants_all() -> None:
+    """Wildcard `*` is intentionally NOT a free pass after the bootstrap-path
+    retirement. A token with literal scope `*` must still match exactly to
+    grant `*` (and nothing else)."""
+    user = User(id="u-1", scope=["*"])
     with TestClient(_scope_app(user, "anything:goes")) as client:
         resp = client.get("/scoped")
-        assert resp.status_code == 200
+        assert resp.status_code == 403
 
 
 def test_require_scope_prefix_wildcard() -> None:
