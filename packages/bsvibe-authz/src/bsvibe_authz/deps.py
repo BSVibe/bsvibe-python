@@ -253,6 +253,7 @@ def require_permission(
     *,
     resource_type: str | None = None,
     resource_id_param: str | None = None,
+    principal_dep: Callable[..., Awaitable[User]] | None = None,
 ) -> Callable[..., Awaitable[None]]:
     """Build a dependency that calls OpenFGA `check(user, relation, object)`.
 
@@ -267,6 +268,19 @@ def require_permission(
                     `permission` is treated as a tenant-wide check
                     (object = "tenant:<active_tenant_id>").
 
+    Permissive mode
+    ---------------
+    When ``settings.openfga_api_url`` is empty, OpenFGA is not deployed —
+    the dep returns immediately (authenticated callers pass, the OpenFGA
+    check is skipped). Production sets the env var and the same code path
+    enforces ``check``.
+
+    ``principal_dep``
+    -----------------
+    By default the principal is resolved via :func:`get_current_user`. Pass
+    a custom ``principal_dep`` (e.g. ``combined_principal("bsage")``) for
+    routes that must also accept a service JWT.
+
     Raises 403 on deny.
     """
     # Validate permission identifier eagerly so misconfigured routes fail at
@@ -277,10 +291,12 @@ def require_permission(
             f"require_permission: invalid permission {permission!r} (expected '<product>.<resource>.<action>')",
         )
     action = parts[2]
+    resolve_principal = principal_dep or get_current_user
 
     async def _dep(
         request: Request,
-        user: User = Depends(get_current_user),
+        user: User = Depends(resolve_principal),
+        settings: Settings = Depends(get_settings_dep),
         cache: PermissionCache = Depends(get_permission_cache),
         fga: FGAClientProtocol = Depends(get_openfga_client),
     ) -> None:
@@ -288,6 +304,11 @@ def require_permission(
         # graph and every demo principal is scoped to a single ephemeral
         # tenant whose data is, by design, public sandbox data.
         if user.is_demo:
+            return
+        # Permissive mode — OpenFGA not deployed. Authenticated caller passes;
+        # the route's own tenant filtering is the effective gate until tuples
+        # exist. See module docstring / Auth handoff 2026-05-15.
+        if not settings.openfga_api_url:
             return
         principal = user.id if user.is_service else f"user:{user.id}"
 
@@ -319,6 +340,44 @@ def require_permission(
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"permission denied: {permission}",
+            )
+
+    return _dep
+
+
+# ---------------------------------------------------------------------------
+# require_admin — role-gated guard
+# ---------------------------------------------------------------------------
+def require_admin(
+    *,
+    principal_dep: Callable[..., Awaitable[User]] | None = None,
+) -> Callable[..., Awaitable[None]]:
+    """Build a dependency that asserts the caller is a tenant admin.
+
+    Checks ``app_metadata.role`` (Supabase claim, lifted onto ``User`` by
+    :func:`parse_user_token`) — ``owner`` or ``admin`` pass, anything else
+    403s. Unlike :func:`require_permission`, this is a *real* enforced check
+    in production today (the role claim rides in the JWT — no OpenFGA
+    dependency), so it is the right gate for mutations / admin config.
+
+    Demo and service principals pass: demo sessions are sandboxed, and a
+    verified service JWT scoped to the product audience is an already-
+    authorized internal caller (auth-app constrains it via the OAuth
+    client's ``allowed_audiences`` / ``allowed_scopes``).
+
+    Pass a custom ``principal_dep`` (e.g. ``combined_principal("bsage")``)
+    for routes that also accept a service JWT.
+    """
+    resolve_principal = principal_dep or get_current_user
+
+    async def _dep(user: User = Depends(resolve_principal)) -> None:
+        if user.is_demo or user.is_service:
+            return
+        role = (user.app_metadata or {}).get("role")
+        if role not in ("owner", "admin"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="admin role required",
             )
 
     return _dep
@@ -359,6 +418,62 @@ class ServiceKeyAuth:
                 detail=str(exc),
             ) from exc
         return ServiceKey(**payload.model_dump())
+
+
+def combined_principal(
+    service_audience: ServiceAudience,
+) -> Callable[..., Awaitable[User]]:
+    """Build a dependency that resolves a principal from a service JWT
+    (``aud == service_audience``) **or** falls through to the standard
+    user / PAT / opaque dispatch (:func:`get_current_user`).
+
+    For routes that must accept both an end-user session and an internal
+    service caller on the *same* path — e.g. BSage knowledge/vault routes
+    that BSNexus reads service-to-service. This is the standard library
+    primitive; products should not hand-roll their own combined resolver.
+
+    Resolution order:
+      1. ``aud=<service_audience>`` service JWT → ``User(is_service=True)``.
+      2. anything else → :func:`get_current_user` (demo / opaque / user JWT
+         / PAT-JWT-introspection).
+    """
+
+    async def _dep(
+        request: Request,
+        creds: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+        settings: Settings = Depends(get_settings_dep),
+        introspection_client: IntrospectionClient | None = Depends(get_introspection_client),
+        introspection_cache: IntrospectionCache = Depends(get_introspection_cache),
+    ) -> User:
+        # Try the service-JWT path first. A token that is not a service JWT
+        # (wrong signing secret / wrong aud) raises AuthError — fall through
+        # to the user dispatch rather than 401, so user sessions still work.
+        if (
+            creds is not None
+            and creds.scheme.lower() == "bearer"
+            and creds.credentials
+            and settings.service_token_signing_secret
+        ):
+            try:
+                payload = verify_service_jwt(creds.credentials, settings, service_audience)
+            except AuthError:
+                pass
+            else:
+                return User(
+                    id=payload.sub,
+                    email=None,
+                    active_tenant_id=payload.tenant_id,
+                    tenants=[],
+                    is_service=True,
+                )
+        return await get_current_user(
+            authorization=request.headers.get("Authorization"),
+            settings=settings,
+            introspection_client=introspection_client,
+            introspection_cache=introspection_cache,
+        )
+
+    return _dep
 
 
 # ---------------------------------------------------------------------------

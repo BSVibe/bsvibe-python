@@ -49,17 +49,17 @@ def test_service_token_payload_matches_bsvibe_auth_pr3_contract() -> None:
     payload = ServiceTokenPayload(
         iss="https://auth.bsvibe.dev",
         sub="service:bsnexus",
-        aud="sage",
-        scope="sage:read sage:write",
+        aud="bsage",
+        scope="bsage:read bsage:write",
         iat=1733823600,
         exp=1733827200,
         token_type="service",
         tenant_id="t-1",
     )
-    assert payload.aud == "sage"
-    assert payload.scopes == ["sage:read", "sage:write"]
-    assert payload.has_scope("sage:read") is True
-    assert payload.has_scope("gateway:read") is False
+    assert payload.aud == "bsage"
+    assert payload.scopes == ["bsage:read", "bsage:write"]
+    assert payload.has_scope("bsage:read") is True
+    assert payload.has_scope("bsgateway:read") is False
 
 
 def test_service_token_payload_rejects_invalid_audience() -> None:
@@ -70,7 +70,7 @@ def test_service_token_payload_rejects_invalid_audience() -> None:
             iss="https://auth.bsvibe.dev",
             sub="service:bsnexus",
             aud="invalid-aud",  # type: ignore[arg-type]
-            scope="sage:read",
+            scope="bsage:read",
             iat=1,
             exp=2,
             token_type="service",
@@ -84,8 +84,8 @@ def test_service_token_payload_rejects_wrong_token_type() -> None:
         ServiceTokenPayload(
             iss="https://auth.bsvibe.dev",
             sub="service:x",
-            aud="sage",
-            scope="sage:read",
+            aud="bsage",
+            scope="bsage:read",
             iat=1,
             exp=2,
             token_type="user",  # type: ignore[arg-type]
@@ -95,11 +95,11 @@ def test_service_token_payload_rejects_wrong_token_type() -> None:
 def test_permission_string_validation() -> None:
     from bsvibe_authz.types import Permission
 
-    p = Permission.parse("nexus.project.read")
-    assert p.product == "nexus"
+    p = Permission.parse("bsnexus.project.read")
+    assert p.product == "bsnexus"
     assert p.resource == "project"
     assert p.action == "read"
-    assert str(p) == "nexus.project.read"
+    assert str(p) == "bsnexus.project.read"
 
     with pytest.raises(ValueError):
         Permission.parse("invalidformat")
@@ -142,8 +142,8 @@ def test_introspection_response_full_active_form() -> None:
             "active": True,
             "sub": "user-123",
             "tenant": "t-1",
-            "aud": ["sage", "gateway"],
-            "scope": ["gateway:models:read", "gateway:models:write"],
+            "aud": ["bsage", "bsgateway"],
+            "scope": ["bsgateway:models:read", "bsgateway:models:write"],
             "exp": 1733827200,
             "client_id": "client-abc",
             "username": "alice@bsvibe.dev",
@@ -152,8 +152,8 @@ def test_introspection_response_full_active_form() -> None:
     assert r.active is True
     assert r.sub == "user-123"
     assert r.tenant == "t-1"
-    assert r.aud == ["sage", "gateway"]
-    assert r.scope == ["gateway:models:read", "gateway:models:write"]
+    assert r.aud == ["bsage", "bsgateway"]
+    assert r.scope == ["bsgateway:models:read", "bsgateway:models:write"]
     assert r.exp == 1733827200
     assert r.client_id == "client-abc"
     assert r.username == "alice@bsvibe.dev"
@@ -170,8 +170,8 @@ def test_introspection_response_accepts_string_scope() -> None:
     """RFC 7662 §2.2 — scope is a space-delimited string."""
     from bsvibe_authz.types import IntrospectionResponse
 
-    r = IntrospectionResponse.model_validate({"active": True, "scope": "gateway:models:read sage:notes:read"})
-    assert r.scope == ["gateway:models:read", "sage:notes:read"]
+    r = IntrospectionResponse.model_validate({"active": True, "scope": "bsgateway:models:read bsage:notes:read"})
+    assert r.scope == ["bsgateway:models:read", "bsage:notes:read"]
 
 
 def test_introspection_response_accepts_star_scope_string() -> None:

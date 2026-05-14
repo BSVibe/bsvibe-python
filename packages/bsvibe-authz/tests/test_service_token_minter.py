@@ -47,8 +47,8 @@ def base_kwargs():
         "auth_url": "https://auth.bsvibe.dev",
         "client_id": "bsgateway-prod",
         "client_secret": "the-long-random-secret",
-        "audience": "supervisor",
-        "scope": ["supervisor:write"],
+        "audience": "bsupervisor",
+        "scope": ["bsupervisor:write"],
     }
 
 
@@ -68,8 +68,8 @@ async def test_get_token_mints_via_oauth_token_endpoint(base_kwargs):
     assert call["authorization"].startswith("Basic ")
     assert call["body"] == {
         "grant_type": "client_credentials",
-        "audience": "supervisor",
-        "scope": "supervisor:write",
+        "audience": "bsupervisor",
+        "scope": "bsupervisor:write",
     }
 
 
@@ -187,15 +187,15 @@ def test_invalid_scope_rejected_at_construction():
             auth_url="https://x",
             client_id="c",
             client_secret="s",
-            audience="supervisor",
-            scope=["sage:read"],  # wrong audience prefix
+            audience="bsupervisor",
+            scope=["bsage:read"],  # wrong audience prefix
         )
     with pytest.raises(ValueError, match="scope"):
         ServiceTokenMinter(
             auth_url="https://x",
             client_id="c",
             client_secret="s",
-            audience="supervisor",
+            audience="bsupervisor",
             scope=[],
         )
     with pytest.raises(ValueError, match="scope"):
@@ -203,8 +203,8 @@ def test_invalid_scope_rejected_at_construction():
             auth_url="https://x",
             client_id="c",
             client_secret="s",
-            audience="supervisor",
-            scope=["supervisor:"],  # malformed
+            audience="bsupervisor",
+            scope=["bsupervisor:"],  # malformed
         )
 
 

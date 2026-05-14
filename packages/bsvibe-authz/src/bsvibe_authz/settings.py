@@ -31,18 +31,23 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # BSVibe-Auth
-    bsvibe_auth_url: str
+    # BSVibe-Auth. Empty default so a partially-configured deployment (no
+    # OpenFGA bootstrapped yet) can still construct ``Settings()`` at import
+    # time — products previously hand-rolled tolerant Settings adapters to
+    # work around the required fields.
+    bsvibe_auth_url: str = ""
 
-    # OpenFGA
-    openfga_api_url: str
-    openfga_store_id: str
-    openfga_auth_model_id: str
+    # OpenFGA. Empty ``openfga_api_url`` means OpenFGA is not deployed: the
+    # ``require_permission`` dep then runs in permissive mode (authenticated
+    # callers pass, the OpenFGA check is skipped).
+    openfga_api_url: str = ""
+    openfga_store_id: str = ""
+    openfga_auth_model_id: str = ""
     openfga_auth_token: str | None = None
     openfga_request_timeout_s: float = 3.0
 
     # Service-token verification (matches BSVibe-Auth PR #3 issuance secret).
-    service_token_signing_secret: str
+    service_token_signing_secret: str = ""
     service_token_issuer: str | None = None
 
     # OAuth2 client_credentials grant (BSVibe-Auth PR #7). One row per

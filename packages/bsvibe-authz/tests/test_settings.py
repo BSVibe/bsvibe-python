@@ -98,6 +98,21 @@ def test_settings_introspection_from_bsv_prefixed_env(
     assert s.introspection_client_secret == "intro-secret"
 
 
+def test_settings_constructs_with_no_env(reset_settings_env: pytest.MonkeyPatch) -> None:
+    """A partially-configured deployment (no OpenFGA bootstrapped) can still
+    construct Settings() at import time — OpenFGA / auth-url / signing-secret
+    fields default to '' instead of being required. Products previously
+    hand-rolled tolerant Settings adapters to work around this."""
+    from bsvibe_authz.settings import Settings
+
+    s = Settings()  # type: ignore[call-arg]
+    assert s.bsvibe_auth_url == ""
+    assert s.openfga_api_url == ""
+    assert s.openfga_store_id == ""
+    assert s.openfga_auth_model_id == ""
+    assert s.service_token_signing_secret == ""
+
+
 def test_settings_get_settings_singleton(reset_settings_env: pytest.MonkeyPatch) -> None:
     reset_settings_env.setenv("BSVIBE_AUTH_URL", "https://auth.bsvibe.dev")
     reset_settings_env.setenv("OPENFGA_API_URL", "http://openfga.local:8080")
