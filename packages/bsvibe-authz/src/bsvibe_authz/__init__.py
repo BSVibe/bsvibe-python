@@ -35,6 +35,7 @@ from .deps import (
     FGAClientProtocol,
     ServiceKey,
     ServiceKeyAuth,
+    combined_principal,
     get_active_tenant_id,
     get_current_user,
     get_introspection_cache,
@@ -42,6 +43,7 @@ from .deps import (
     get_openfga_client,
     get_permission_cache,
     get_settings_dep,
+    require_admin,
     require_permission,
     require_scope,
     reset_singletons,
@@ -62,7 +64,7 @@ from .types import (
     User,
 )
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 __all__ = [
     "AuthError",
@@ -90,6 +92,7 @@ __all__ = [
     "TenantType",
     "User",
     "__version__",
+    "combined_principal",
     "get_active_tenant_id",
     "get_current_user",
     "get_introspection_cache",
@@ -99,6 +102,7 @@ __all__ = [
     "get_settings",
     "get_settings_dep",
     "parse_user_token",
+    "require_admin",
     "require_permission",
     "require_scope",
     "reset_settings_cache",

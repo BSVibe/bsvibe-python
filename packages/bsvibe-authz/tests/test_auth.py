@@ -176,14 +176,14 @@ async def test_verify_service_jwt_passes_for_valid_payload(auth_settings, make_s
 
     token = make_service_jwt(
         sub="service:bsnexus",
-        aud="sage",
-        scope="sage:read sage:write",
+        aud="bsage",
+        scope="bsage:read bsage:write",
         tenant_id="t-1",
     )
-    payload = verify_service_jwt(token, auth_settings, expected_audience="sage")
-    assert payload.aud == "sage"
+    payload = verify_service_jwt(token, auth_settings, expected_audience="bsage")
+    assert payload.aud == "bsage"
     assert payload.sub == "service:bsnexus"
-    assert payload.has_scope("sage:read")
+    assert payload.has_scope("bsage:read")
     assert payload.tenant_id == "t-1"
     assert payload.token_type == "service"
 
@@ -212,8 +212,8 @@ async def test_verify_service_jwt_uses_service_token_issuer(
         {
             "iss": "http://auth-app:5179",
             "sub": "user:u-1",
-            "aud": "supervisor",
-            "scope": "supervisor:events",
+            "aud": "bsupervisor",
+            "scope": "bsupervisor:events",
             "iat": now,
             "exp": now + 60,
             "token_type": "service",
@@ -223,18 +223,18 @@ async def test_verify_service_jwt_uses_service_token_issuer(
         algorithm="HS256",
     )
 
-    payload = verify_service_jwt(token, settings, expected_audience="supervisor")
+    payload = verify_service_jwt(token, settings, expected_audience="bsupervisor")
 
-    assert payload.aud == "supervisor"
-    assert payload.has_scope("supervisor:events")
+    assert payload.aud == "bsupervisor"
+    assert payload.has_scope("bsupervisor:events")
 
 
 async def test_verify_service_jwt_rejects_wrong_audience(auth_settings, make_service_jwt) -> None:
     from bsvibe_authz.auth import AuthError, verify_service_jwt
 
-    token = make_service_jwt(aud="sage")
+    token = make_service_jwt(aud="bsage")
     with pytest.raises(AuthError):
-        verify_service_jwt(token, auth_settings, expected_audience="gateway")
+        verify_service_jwt(token, auth_settings, expected_audience="bsgateway")
 
 
 async def test_verify_service_jwt_rejects_wrong_token_type(auth_settings, service_signing_secret, issuer) -> None:
@@ -245,8 +245,8 @@ async def test_verify_service_jwt_rejects_wrong_token_type(auth_settings, servic
         {
             "iss": issuer,
             "sub": "service:x",
-            "aud": "sage",
-            "scope": "sage:read",
+            "aud": "bsage",
+            "scope": "bsage:read",
             "iat": now,
             "exp": now + 60,
             "token_type": "user",  # wrong
@@ -255,7 +255,7 @@ async def test_verify_service_jwt_rejects_wrong_token_type(auth_settings, servic
         algorithm="HS256",
     )
     with pytest.raises(AuthError):
-        verify_service_jwt(token, auth_settings, expected_audience="sage")
+        verify_service_jwt(token, auth_settings, expected_audience="bsage")
 
 
 async def test_verify_service_jwt_rejects_expired(auth_settings, make_service_jwt) -> None:
@@ -263,7 +263,7 @@ async def test_verify_service_jwt_rejects_expired(auth_settings, make_service_jw
 
     token = make_service_jwt(exp_offset=-10)
     with pytest.raises(AuthError):
-        verify_service_jwt(token, auth_settings, expected_audience="sage")
+        verify_service_jwt(token, auth_settings, expected_audience="bsage")
 
 
 async def test_verify_service_jwt_rejects_scope_audience_mismatch(
@@ -276,8 +276,8 @@ async def test_verify_service_jwt_rejects_scope_audience_mismatch(
         {
             "iss": issuer,
             "sub": "service:x",
-            "aud": "sage",
-            "scope": "gateway:read",  # scope doesn't match aud
+            "aud": "bsage",
+            "scope": "bsgateway:read",  # scope doesn't match aud
             "iat": now,
             "exp": now + 60,
             "token_type": "service",
@@ -286,7 +286,7 @@ async def test_verify_service_jwt_rejects_scope_audience_mismatch(
         algorithm="HS256",
     )
     with pytest.raises(AuthError):
-        verify_service_jwt(token, auth_settings, expected_audience="sage")
+        verify_service_jwt(token, auth_settings, expected_audience="bsage")
 
 
 async def test_parse_user_token_returns_user(auth_settings, make_user_jwt) -> None:
@@ -374,8 +374,8 @@ def _make_active_response(**overrides):
         "active": True,
         "sub": "u-1",
         "tenant": "t-1",
-        "aud": ["gateway"],
-        "scope": ["gateway:models:write"],
+        "aud": ["bsgateway"],
+        "scope": ["bsgateway:models:write"],
         "exp": 9999999999,
         "client_id": "bsgateway-prod",
         "username": "alice",
@@ -394,7 +394,7 @@ async def test_verify_opaque_token_returns_user_on_active(opaque_cache) -> None:
 
     assert user.id == "u-1"
     assert user.active_tenant_id == "t-1"
-    assert user.scope == ["gateway:models:write"]
+    assert user.scope == ["bsgateway:models:write"]
     assert user.is_service is False
     client.introspect.assert_awaited_once_with("bsv_sk_abc")
 

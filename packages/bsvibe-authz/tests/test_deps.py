@@ -70,7 +70,7 @@ def _build_app(
         user: CurrentUser,
         _allowed: None = Depends(
             require_permission(
-                "nexus.project.read",
+                "bsnexus.project.read",
                 resource_type="project",
                 resource_id_param="project_id",
             ),
@@ -80,7 +80,7 @@ def _build_app(
 
     @app.get("/internal/data")
     async def internal_data(
-        svc: ServiceKey = Depends(ServiceKeyAuth(audience="sage")),
+        svc: ServiceKey = Depends(ServiceKeyAuth(audience="bsage")),
     ) -> dict:
         return {"sub": svc.sub, "scope": svc.scope}
 
@@ -139,15 +139,15 @@ def test_service_key_auth_accepts_valid_service_token(deps_settings, make_servic
     with TestClient(app) as client:
         token = make_service_jwt(
             sub="service:bsnexus",
-            aud="sage",
-            scope="sage:read sage:write",
+            aud="bsage",
+            scope="bsage:read bsage:write",
             tenant_id="t-1",
         )
         resp = client.get("/internal/data", headers=_bearer(token))
         assert resp.status_code == 200
         body = resp.json()
         assert body["sub"] == "service:bsnexus"
-        assert body["scope"] == "sage:read sage:write"
+        assert body["scope"] == "bsage:read bsage:write"
 
 
 def test_service_key_auth_rejects_user_jwt(deps_settings, make_user_jwt) -> None:
@@ -161,7 +161,7 @@ def test_service_key_auth_rejects_user_jwt(deps_settings, make_user_jwt) -> None
 def test_service_key_auth_rejects_wrong_audience(deps_settings, make_service_jwt) -> None:
     app = _build_app(deps_settings)
     with TestClient(app) as client:
-        token = make_service_jwt(aud="gateway")
+        token = make_service_jwt(aud="bsgateway")
         resp = client.get("/internal/data", headers=_bearer(token))
         assert resp.status_code == 401
 
@@ -226,7 +226,7 @@ def opaque_settings(deps_settings: Settings) -> Settings:
     return deps_settings.model_copy(
         update={
             "introspection_url": "https://auth.bsvibe.dev/oauth/introspect",
-            "introspection_client_id": "sage",
+            "introspection_client_id": "bsage",
             "introspection_client_secret": "shh",
         },
     )
@@ -263,7 +263,7 @@ def test_dispatch_opaque_token_active(opaque_settings) -> None:
             active=True,
             sub="user-123",
             tenant="t-1",
-            scope=["gateway:models:read"],
+            scope=["bsgateway:models:read"],
         ),
     )
     app = _build_dispatch_app(opaque_settings, fake_client=fake)
@@ -272,7 +272,7 @@ def test_dispatch_opaque_token_active(opaque_settings) -> None:
         assert resp.status_code == 200
         body = resp.json()
         assert body["id"] == "user-123"
-        assert body["scope"] == ["gateway:models:read"]
+        assert body["scope"] == ["bsgateway:models:read"]
 
 
 def test_dispatch_opaque_token_inactive_returns_401(opaque_settings) -> None:
@@ -315,7 +315,7 @@ def test_dispatch_pat_jwt_falls_back_to_introspection(opaque_settings) -> None:
             active=True,
             sub="user-pat",
             tenant="t-1",
-            scope=["gateway:models:read"],
+            scope=["bsgateway:models:read"],
         ),
     )
     app = _build_dispatch_app(opaque_settings, fake_client=fake)
@@ -392,8 +392,8 @@ def _scope_app(user: User, required: str) -> FastAPI:
 
 
 def test_require_scope_exact_match() -> None:
-    user = User(id="u-1", scope=["gateway:models:read"])
-    with TestClient(_scope_app(user, "gateway:models:read")) as client:
+    user = User(id="u-1", scope=["bsgateway:models:read"])
+    with TestClient(_scope_app(user, "bsgateway:models:read")) as client:
         resp = client.get("/scoped")
         assert resp.status_code == 200
 
@@ -409,15 +409,15 @@ def test_require_scope_star_no_longer_grants_all() -> None:
 
 
 def test_require_scope_prefix_wildcard() -> None:
-    user = User(id="u-1", scope=["gateway:*"])
-    with TestClient(_scope_app(user, "gateway:models:write")) as client:
+    user = User(id="u-1", scope=["bsgateway:*"])
+    with TestClient(_scope_app(user, "bsgateway:models:write")) as client:
         resp = client.get("/scoped")
         assert resp.status_code == 200
 
 
 def test_require_scope_403_when_missing() -> None:
-    user = User(id="u-1", scope=["gateway:models:read"])
-    with TestClient(_scope_app(user, "gateway:models:write")) as client:
+    user = User(id="u-1", scope=["bsgateway:models:read"])
+    with TestClient(_scope_app(user, "bsgateway:models:write")) as client:
         resp = client.get("/scoped")
         assert resp.status_code == 403
 
@@ -427,6 +427,147 @@ def test_require_scope_empty_scope_403() -> None:
     with TestClient(_scope_app(user, "anything")) as client:
         resp = client.get("/scoped")
         assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# require_permission — permissive mode (openfga_api_url unset)
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def permissive_settings(deps_settings: Settings) -> Settings:
+    """deps_settings with OpenFGA *not* deployed — require_permission no-ops."""
+    return deps_settings.model_copy(update={"openfga_api_url": ""})
+
+
+def test_require_permission_permissive_when_openfga_unset(permissive_settings, make_user_jwt) -> None:
+    """openfga_api_url='' → require_permission passes any authenticated user,
+    even when the (never-called) FGA client would deny."""
+    app = _build_app(permissive_settings, fga_check=lambda u, r, o: False)
+    with TestClient(app) as client:
+        token = make_user_jwt(sub="u-1")
+        resp = client.get("/projects/p1", headers=_bearer(token))
+        assert resp.status_code == 200
+
+
+def test_require_permission_permissive_still_requires_auth(permissive_settings) -> None:
+    """Permissive mode is not anonymous — an unauthenticated call still 401s."""
+    app = _build_app(permissive_settings)
+    with TestClient(app) as client:
+        resp = client.get("/projects/p1")
+        assert resp.status_code == 401
+
+
+def test_require_permission_enforces_when_openfga_set(deps_settings, make_user_jwt) -> None:
+    """openfga_api_url set → the FGA check is real again (regression guard)."""
+    app = _build_app(deps_settings, fga_check=lambda u, r, o: False)
+    with TestClient(app) as client:
+        token = make_user_jwt(sub="u-1")
+        resp = client.get("/projects/p1", headers=_bearer(token))
+        assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# require_admin — role-gated guard
+# ---------------------------------------------------------------------------
+def _build_admin_app(settings: Settings, principal_dep: Any | None = None) -> FastAPI:
+    deps_mod.reset_singletons()
+    app = FastAPI()
+    app.dependency_overrides[deps_mod.get_settings_dep] = lambda: settings
+    from bsvibe_authz.deps import require_admin
+
+    @app.get("/admin")
+    async def admin_route(_dep: None = Depends(require_admin(principal_dep=principal_dep))) -> dict:
+        return {"ok": True}
+
+    return app
+
+
+@pytest.mark.parametrize("role", ["owner", "admin"])
+def test_require_admin_allows_admin_roles(deps_settings, make_user_jwt, role) -> None:
+    app = _build_admin_app(deps_settings)
+    with TestClient(app) as client:
+        token = make_user_jwt(sub="u-1", extra_claims={"app_metadata": {"role": role}})
+        resp = client.get("/admin", headers=_bearer(token))
+        assert resp.status_code == 200
+
+
+@pytest.mark.parametrize("role", ["member", "viewer", None])
+def test_require_admin_403_for_non_admin(deps_settings, make_user_jwt, role) -> None:
+    app = _build_admin_app(deps_settings)
+    claims = {"app_metadata": {"role": role}} if role is not None else None
+    with TestClient(app) as client:
+        token = make_user_jwt(sub="u-1", extra_claims=claims)
+        resp = client.get("/admin", headers=_bearer(token))
+        assert resp.status_code == 403
+
+
+def test_require_admin_401_without_auth(deps_settings) -> None:
+    app = _build_admin_app(deps_settings)
+    with TestClient(app) as client:
+        resp = client.get("/admin")
+        assert resp.status_code == 401
+
+
+def test_require_admin_allows_service_principal(deps_settings, make_service_jwt) -> None:
+    """A verified service JWT (scoped to the audience) is an already-authorized
+    internal caller — require_admin passes it (uses combined_principal)."""
+    from bsvibe_authz.deps import combined_principal
+
+    app = _build_admin_app(deps_settings, principal_dep=combined_principal("bsage"))
+    with TestClient(app) as client:
+        token = make_service_jwt(sub="service:bsnexus", aud="bsage", tenant_id="t-1")
+        resp = client.get("/admin", headers=_bearer(token))
+        assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# combined_principal — service JWT OR user dispatch on the same route
+# ---------------------------------------------------------------------------
+def _build_combined_app(settings: Settings, audience: str = "bsage") -> FastAPI:
+    deps_mod.reset_singletons()
+    app = FastAPI()
+    app.dependency_overrides[deps_mod.get_settings_dep] = lambda: settings
+    from bsvibe_authz.deps import combined_principal
+
+    @app.get("/who")
+    async def who(user: User = Depends(combined_principal(audience))) -> dict:
+        return {"id": user.id, "is_service": user.is_service}
+
+    return app
+
+
+def test_combined_principal_resolves_service_jwt(deps_settings, make_service_jwt) -> None:
+    app = _build_combined_app(deps_settings, audience="bsage")
+    with TestClient(app) as client:
+        token = make_service_jwt(sub="service:bsnexus", aud="bsage", tenant_id="t-1")
+        resp = client.get("/who", headers=_bearer(token))
+        assert resp.status_code == 200
+        assert resp.json() == {"id": "service:bsnexus", "is_service": True}
+
+
+def test_combined_principal_falls_through_to_user_jwt(deps_settings, make_user_jwt) -> None:
+    app = _build_combined_app(deps_settings, audience="bsage")
+    with TestClient(app) as client:
+        token = make_user_jwt(sub="u-1")
+        resp = client.get("/who", headers=_bearer(token))
+        assert resp.status_code == 200
+        assert resp.json() == {"id": "u-1", "is_service": False}
+
+
+def test_combined_principal_rejects_wrong_service_audience(deps_settings, make_service_jwt) -> None:
+    """A service JWT for a different audience is not a valid user JWT either
+    → falls through to get_current_user, which 401s."""
+    app = _build_combined_app(deps_settings, audience="bsage")
+    with TestClient(app) as client:
+        token = make_service_jwt(sub="service:bsnexus", aud="bsgateway")
+        resp = client.get("/who", headers=_bearer(token))
+        assert resp.status_code == 401
+
+
+def test_combined_principal_401_without_auth(deps_settings) -> None:
+    app = _build_combined_app(deps_settings, audience="bsage")
+    with TestClient(app) as client:
+        resp = client.get("/who")
+        assert resp.status_code == 401
 
 
 # ---- lazy singleton sanity -------------------------------------------------

@@ -54,7 +54,7 @@ async def test_introspect_active_token_returns_full_payload():
                 "sub": "user-123",
                 "tenant": "t-acme",
                 "aud": ["bsgateway"],
-                "scope": ["gateway:models:read", "gateway:models:write"],
+                "scope": ["bsgateway:models:read", "bsgateway:models:write"],
                 "exp": 1_900_000_000,
                 "client_id": "cli-xyz",
                 "username": "alice@bsvibe.dev",
@@ -72,7 +72,7 @@ async def test_introspect_active_token_returns_full_payload():
     assert result.sub == "user-123"
     assert result.tenant == "t-acme"
     assert result.aud == ["bsgateway"]
-    assert result.scope == ["gateway:models:read", "gateway:models:write"]
+    assert result.scope == ["bsgateway:models:read", "bsgateway:models:write"]
     assert result.exp == 1_900_000_000
     assert result.client_id == "cli-xyz"
     assert result.username == "alice@bsvibe.dev"

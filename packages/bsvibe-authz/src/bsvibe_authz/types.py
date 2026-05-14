@@ -13,12 +13,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-# Round 5 final: the only legitimate service-token audiences are the 4
-# MCP-aligned bare names. The legacy ``bs*``-prefixed audiences were
-# removed in Step 5 of the cutover (PR following bsvibe-authz 0.9.2).
-ServiceAudience = Literal["sage", "gateway", "supervisor", "nexus"]
+# Post-Round-5 reversion: service-token audiences are again ``bs``-prefixed
+# product names (bsage, bsgateway, bsupervisor, bsnexus). The bare-name MCP
+# grammar from Round 5 was an intermediate step; unified back to ``bs*`` so
+# audience and product identity match everywhere. (The ``bsvibe-auth``
+# internal carve-out is handled in the auth-app, not here.)
+ServiceAudience = Literal["bsage", "bsgateway", "bsupervisor", "bsnexus"]
 SERVICE_AUDIENCES: frozenset[str] = frozenset(
-    ("sage", "gateway", "supervisor", "nexus")
+    ("bsage", "bsgateway", "bsupervisor", "bsnexus")
 )
 TenantRole = Literal["owner", "admin", "member", "viewer"]
 TenantPlan = Literal["free", "pro", "team", "enterprise"]
