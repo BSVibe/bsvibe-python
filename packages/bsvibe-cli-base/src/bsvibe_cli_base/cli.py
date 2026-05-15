@@ -54,7 +54,7 @@ from bsvibe_cli_base.profile import ProfileNotFoundError, ProfileStore
 configure_logging(level="info", json_output=False, stream=sys.stderr)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from bsvibe_cli_base.device_flow import DeviceTokenGrant
+    from bsvibe_cli_base.loopback_flow import TokenGrant
 
 logger = structlog.get_logger(__name__)
 
@@ -80,7 +80,7 @@ class CliContext:
     dry_run: bool
     formatter: OutputFormatter
     profile_store: ProfileStore
-    keyring_persist_callback: Callable[["DeviceTokenGrant"], None] | None = None
+    keyring_persist_callback: Callable[["TokenGrant"], None] | None = None
 
 
 def cli_app(

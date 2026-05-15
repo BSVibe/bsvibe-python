@@ -1,7 +1,7 @@
 [project]
 name = "bsvibe-cli-base"
-version = "0.1.0"
-description = "BSVibe shared CLI foundation — Typer factory, profiles, keyring, OutputFormatter, device flow"
+version = "0.2.0"
+description = "BSVibe shared CLI foundation — Typer factory, profiles, keyring, OutputFormatter, loopback OAuth login"
 requires-python = ">=3.11"
 dependencies = [
     "bsvibe-core",
