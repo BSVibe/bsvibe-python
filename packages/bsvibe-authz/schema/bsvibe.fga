@@ -20,9 +20,10 @@ model
 # permission identifier ``<product>.<resource>.<action>`` resolves
 # directly to an OpenFGA relation. The action relation is a thin alias
 # over the role hierarchy:
-#   read   = viewer
-#   write  = editor (or admin if no editor relation exists)
-#   delete = owner / admin / editor depending on resource semantics
+#   read    = viewer
+#   write   = editor (or admin if no editor relation exists)
+#   execute = write  (BSage plugins.execute and similar write-class ops)
+#   delete  = owner / admin / editor depending on resource semantics
 
 # ─── Identity types ───────────────────────────────────────────────
 
@@ -70,6 +71,7 @@ type tenant
     # Action aliases
     define read: viewer
     define write: admin
+    define execute: write
     define create: admin
     define delete: owner
 

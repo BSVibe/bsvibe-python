@@ -24,9 +24,9 @@ from __future__ import annotations
 from .auth import (
     AuthError,
     parse_user_token,
-    verify_opaque_token,
     verify_service_jwt,
     verify_user_jwt,
+    verify_via_introspection,
 )
 from .cache import IntrospectionCache, PermissionCache
 from .client import OpenFGAAuthError, OpenFGAClient, OpenFGAError
@@ -64,7 +64,7 @@ from .types import (
     User,
 )
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 __all__ = [
     "AuthError",
@@ -107,7 +107,7 @@ __all__ = [
     "require_scope",
     "reset_settings_cache",
     "reset_singletons",
-    "verify_opaque_token",
     "verify_service_jwt",
     "verify_user_jwt",
+    "verify_via_introspection",
 ]

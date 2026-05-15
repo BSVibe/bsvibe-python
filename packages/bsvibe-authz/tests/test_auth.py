@@ -356,7 +356,7 @@ async def test_parse_user_token_top_level_tenant_id_wins(auth_settings, make_use
 
 
 # ---------------------------------------------------------------------------
-# verify_opaque_token (RFC 7662 introspection + cache)
+# verify_via_introspection (RFC 7662 introspection + cache)
 # ---------------------------------------------------------------------------
 
 
@@ -384,13 +384,13 @@ def _make_active_response(**overrides):
     return IntrospectionResponse(**payload)
 
 
-async def test_verify_opaque_token_returns_user_on_active(opaque_cache) -> None:
-    from bsvibe_authz.auth import verify_opaque_token
+async def test_verify_via_introspection_returns_user_on_active(opaque_cache) -> None:
+    from bsvibe_authz.auth import verify_via_introspection
 
     client = AsyncMock()
     client.introspect = AsyncMock(return_value=_make_active_response())
 
-    user = await verify_opaque_token("bsv_sk_abc", client, opaque_cache)
+    user = await verify_via_introspection("bsv_sk_abc", client, opaque_cache)
 
     assert user.id == "u-1"
     assert user.active_tenant_id == "t-1"
@@ -399,36 +399,36 @@ async def test_verify_opaque_token_returns_user_on_active(opaque_cache) -> None:
     client.introspect.assert_awaited_once_with("bsv_sk_abc")
 
 
-async def test_verify_opaque_token_raises_on_inactive(opaque_cache) -> None:
-    from bsvibe_authz.auth import AuthError, verify_opaque_token
+async def test_verify_via_introspection_raises_on_inactive(opaque_cache) -> None:
+    from bsvibe_authz.auth import AuthError, verify_via_introspection
     from bsvibe_authz.types import IntrospectionResponse
 
     client = AsyncMock()
     client.introspect = AsyncMock(return_value=IntrospectionResponse(active=False))
 
     with pytest.raises(AuthError) as exc_info:
-        await verify_opaque_token("bsv_sk_revoked", client, opaque_cache)
+        await verify_via_introspection("bsv_sk_revoked", client, opaque_cache)
 
     # Token contents must NOT leak into the error message.
     assert "bsv_sk_revoked" not in str(exc_info.value)
 
 
-async def test_verify_opaque_token_uses_cache_on_repeat_calls(opaque_cache) -> None:
-    from bsvibe_authz.auth import verify_opaque_token
+async def test_verify_via_introspection_uses_cache_on_repeat_calls(opaque_cache) -> None:
+    from bsvibe_authz.auth import verify_via_introspection
 
     client = AsyncMock()
     client.introspect = AsyncMock(return_value=_make_active_response())
 
-    user1 = await verify_opaque_token("bsv_sk_xyz", client, opaque_cache)
-    user2 = await verify_opaque_token("bsv_sk_xyz", client, opaque_cache)
+    user1 = await verify_via_introspection("bsv_sk_xyz", client, opaque_cache)
+    user2 = await verify_via_introspection("bsv_sk_xyz", client, opaque_cache)
 
     assert user1.id == user2.id == "u-1"
     # Second call should hit cache, not re-introspect.
     client.introspect.assert_awaited_once()
 
 
-async def test_verify_opaque_token_caches_inactive_response(opaque_cache) -> None:
-    from bsvibe_authz.auth import AuthError, verify_opaque_token
+async def test_verify_via_introspection_caches_inactive_response(opaque_cache) -> None:
+    from bsvibe_authz.auth import AuthError, verify_via_introspection
     from bsvibe_authz.types import IntrospectionResponse
 
     client = AsyncMock()
@@ -436,6 +436,6 @@ async def test_verify_opaque_token_caches_inactive_response(opaque_cache) -> Non
 
     for _ in range(2):
         with pytest.raises(AuthError):
-            await verify_opaque_token("bsv_sk_revoked", client, opaque_cache)
+            await verify_via_introspection("bsv_sk_revoked", client, opaque_cache)
 
     client.introspect.assert_awaited_once()

@@ -144,16 +144,24 @@ def verify_service_jwt(
     return payload
 
 
-async def verify_opaque_token(
+async def verify_via_introspection(
     token: str,
     client: IntrospectionClient,
     cache: IntrospectionCache,
 ) -> User:
-    """Verify an opaque ``bsv_sk_*`` token via RFC 7662 introspection.
+    """Verify a token via RFC 7662 introspection.
+
+    Used as the PAT-JWT fallback in :func:`get_current_user` — PAT JWTs
+    from the device-authorization grant are signed with
+    ``SERVICE_TOKEN_SIGNING_SECRET`` (not ``USER_JWT_SECRET``), so they
+    fail ``verify_user_jwt``; ``/oauth/introspect`` accepts them by ``jti``.
 
     Caches both active and inactive responses keyed by sha256(token) so that
     revoked tokens cannot stampede the auth server. Raises :class:`AuthError`
     if the token is inactive — error message MUST NOT contain the token.
+
+    (Formerly ``verify_opaque_token``; renamed in Tier 2 of the 2026-05
+    auth cleanup, which retired the ``bsv_sk_*`` opaque token dispatch.)
     """
     token_sha256 = hashlib.sha256(token.encode()).hexdigest()
     response = await cache.get(token_sha256)
@@ -162,8 +170,8 @@ async def verify_opaque_token(
         await cache.set(token_sha256, response)
 
     if not response.active:
-        logger.info("opaque_token_inactive", token_sha256=token_sha256)
-        raise AuthError("opaque token is not active")
+        logger.info("introspection_token_inactive", token_sha256=token_sha256)
+        raise AuthError("token is not active")
 
     return User(
         id=response.sub or "",
