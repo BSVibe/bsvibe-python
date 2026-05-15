@@ -20,8 +20,8 @@ If the refresh endpoint itself returns 4xx/5xx, the client raises
 "please run `<cli> login` again" message instead of a stack trace.
 
 The optional ``on_token_refreshed`` callback fires with the new
-:class:`DeviceTokenGrant` so the CLI can persist the rotated refresh
-token (and the access token) to keyring before the next request.
+:class:`TokenGrant` so the CLI can persist the rotated refresh token
+(and the access token) to keyring before the next request.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ import structlog
 
 from bsvibe_core.http import HttpClientBase
 
-from bsvibe_cli_base.device_flow import DeviceTokenGrant
+from bsvibe_cli_base.loopback_flow import TokenGrant
 
 logger = structlog.get_logger(__name__)
 
@@ -55,7 +55,7 @@ class CliHttpClient(HttpClientBase):
         client_id: str | None = None,
         token_endpoint: str = "/oauth/token",
         http: httpx.AsyncClient | None = None,
-        on_token_refreshed: Callable[[DeviceTokenGrant], None] | None = None,
+        on_token_refreshed: Callable[[TokenGrant], None] | None = None,
         timeout_s: float = 5.0,
         retries: int = 2,
         headers: dict[str, str] | None = None,
@@ -102,7 +102,7 @@ class CliHttpClient(HttpClientBase):
         self._apply_grant(grant)
         return await super().request(method, path, **kw)
 
-    async def _refresh(self) -> DeviceTokenGrant:
+    async def _refresh(self) -> TokenGrant:
         body: dict[str, Any] = {
             "grant_type": "refresh_token",
             "refresh_token": self._refresh_token,
@@ -121,14 +121,14 @@ class CliHttpClient(HttpClientBase):
         if resp.status_code >= 400:
             raise CliHttpAuthError(f"token refresh failed: {resp.status_code} {_error_msg(resp)}")
         payload = resp.json()
-        return DeviceTokenGrant(
+        return TokenGrant(
             access_token=payload["access_token"],
             refresh_token=payload.get("refresh_token"),
             expires_in=payload.get("expires_in"),
             token_type=payload.get("token_type", "Bearer"),
         )
 
-    def _apply_grant(self, grant: DeviceTokenGrant) -> None:
+    def _apply_grant(self, grant: TokenGrant) -> None:
         self._token = grant.access_token
         if grant.refresh_token:
             self._refresh_token = grant.refresh_token

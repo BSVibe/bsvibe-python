@@ -27,7 +27,7 @@ from collections.abc import Callable
 import httpx
 import pytest
 
-from bsvibe_cli_base.device_flow import DeviceTokenGrant
+from bsvibe_cli_base.loopback_flow import TokenGrant
 from bsvibe_cli_base.http import CliHttpAuthError, CliHttpClient
 
 
@@ -36,7 +36,7 @@ def _client(
     *,
     token: str | None = "at-old",
     refresh_token: str | None = "rt-old",
-    on_token_refreshed: Callable[[DeviceTokenGrant], None] | None = None,
+    on_token_refreshed: Callable[[TokenGrant], None] | None = None,
 ) -> CliHttpClient:
     transport = httpx.MockTransport(handler)
     http = httpx.AsyncClient(transport=transport, base_url="https://api.test")
@@ -101,7 +101,7 @@ class TestRefreshFlow:
                 return httpx.Response(200, json={"ok": True})
             return httpx.Response(500)
 
-        granted: list[DeviceTokenGrant] = []
+        granted: list[TokenGrant] = []
         client = _client(handler, on_token_refreshed=lambda g: granted.append(g))
         try:
             resp = await client.get("/items")

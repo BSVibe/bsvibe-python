@@ -272,10 +272,10 @@ class TestMakePersistCallback:
         stub = _MemoryKeyring()
         _set_keyring_stub(monkeypatch, stub)
         from bsvibe_cli_base import keyring as kr
-        from bsvibe_cli_base.device_flow import DeviceTokenGrant
+        from bsvibe_cli_base.loopback_flow import TokenGrant
 
         cb = kr.make_persist_callback("prod")
-        cb(DeviceTokenGrant(access_token="new-access", refresh_token="new-refresh"))
+        cb(TokenGrant(access_token="new-access", refresh_token="new-refresh"))
 
         assert stub.store[("bsvibe", "prod")] == "new-access"
         assert stub.store[("bsvibe", "prod.refresh")] == "new-refresh"
@@ -288,10 +288,10 @@ class TestMakePersistCallback:
         stub.store[("bsvibe", "prod.refresh")] = "old-refresh"
         _set_keyring_stub(monkeypatch, stub)
         from bsvibe_cli_base import keyring as kr
-        from bsvibe_cli_base.device_flow import DeviceTokenGrant
+        from bsvibe_cli_base.loopback_flow import TokenGrant
 
         cb = kr.make_persist_callback("prod")
-        cb(DeviceTokenGrant(access_token="new-access"))
+        cb(TokenGrant(access_token="new-access"))
 
         assert stub.store[("bsvibe", "prod")] == "new-access"
         assert stub.store[("bsvibe", "prod.refresh")] == "old-refresh"

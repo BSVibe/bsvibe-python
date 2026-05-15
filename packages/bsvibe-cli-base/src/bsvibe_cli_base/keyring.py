@@ -26,7 +26,7 @@ import structlog
 from bsvibe_cli_base.config import Profile
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from bsvibe_cli_base.device_flow import DeviceTokenGrant
+    from bsvibe_cli_base.loopback_flow import TokenGrant
 
 logger = structlog.get_logger(__name__)
 
@@ -157,17 +157,17 @@ def delete_refresh_token(profile_name: str) -> None:
         logger.debug("keyring_refresh_delete_skipped", profile=profile_name, error=str(exc))
 
 
-def make_persist_callback(profile_name: str) -> Callable[["DeviceTokenGrant"], None]:
+def make_persist_callback(profile_name: str) -> Callable[["TokenGrant"], None]:
     """Return the ``on_token_refreshed`` hook for :class:`CliHttpClient`.
 
     After a 401-then-refresh rotation the client invokes this callback
-    with the new :class:`DeviceTokenGrant`; we mirror both halves into
-    keyring so the next process invocation picks them up. If the grant
-    omits a new refresh token (server-side rotation is optional per
-    RFC 6749 §6) the existing refresh slot is left alone.
+    with the new :class:`TokenGrant`; we mirror both halves into keyring
+    so the next process invocation picks them up. If the grant omits a
+    new refresh token (server-side rotation is optional per RFC 6749
+    §6) the existing refresh slot is left alone.
     """
 
-    def _persist(grant: "DeviceTokenGrant") -> None:
+    def _persist(grant: "TokenGrant") -> None:
         set_token(profile_name, grant.access_token)
         if grant.refresh_token:
             set_refresh_token(profile_name, grant.refresh_token)
