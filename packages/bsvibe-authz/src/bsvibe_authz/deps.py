@@ -28,17 +28,15 @@ import jwt as _jwt
 from .auth import (
     AuthError,
     parse_user_token,
-    verify_opaque_token,
     verify_service_jwt,
     verify_user_jwt,
+    verify_via_introspection,
 )
 from .cache import IntrospectionCache, PermissionCache
-from .client import OpenFGAClient
+from .client import OpenFGAClient, OpenFGAError
 from .introspection import IntrospectionClient
 from .settings import Settings, get_settings
 from .types import ServiceAudience, ServiceTokenPayload, User
-
-OPAQUE_TOKEN_PREFIX = "bsv_sk_"
 
 
 def _looks_like_jwt(token: str) -> bool:
@@ -61,6 +59,7 @@ _bearer_scheme = HTTPBearer(auto_error=False)
 class FGAClientProtocol(Protocol):
     async def check(self, user: str, relation: str, object_: str) -> bool: ...
     async def list_objects(self, user: str, relation: str, type_: str) -> list[str]: ...
+    async def write_tuple(self, user: str, relation: str, object_: str) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -210,8 +209,6 @@ async def get_current_user(
     if demo_user is not None:
         return demo_user
     try:
-        if token.startswith(OPAQUE_TOKEN_PREFIX) and introspection_client is not None:
-            return await verify_opaque_token(token, introspection_client, introspection_cache)
         try:
             payload = verify_user_jwt(token, settings)
         except AuthError:
@@ -219,8 +216,11 @@ async def get_current_user(
             # SERVICE_TOKEN_SIGNING_SECRET (not USER_JWT_SECRET), so they fail
             # `verify_user_jwt`. The `/oauth/introspect` endpoint accepts
             # them by jti — fall through when introspection is configured.
+            # (The legacy ``bsv_sk_*`` opaque token dispatch was removed in
+            # Tier 2 of the 2026-05 auth cleanup; introspection now serves
+            # only the PAT JWT path.)
             if introspection_client is not None and _looks_like_jwt(token):
-                return await verify_opaque_token(token, introspection_client, introspection_cache)
+                return await verify_via_introspection(token, introspection_client, introspection_cache)
             raise
     except AuthError as exc:
         raise HTTPException(
@@ -328,6 +328,34 @@ def require_permission(
                     detail="no active tenant in session",
                 )
             object_ = f"tenant:{user.active_tenant_id}"
+
+        # Lazy auto-provision: ensure the caller's role tuple exists on
+        # the tenant before the check. This bridges the missing-platform-
+        # tenant-provisioning gap (BSVibe writes no runtime tuples today —
+        # the only authoritative source for "user X has role R on tenant
+        # T" is ``app_metadata`` in the wrapped session JWT). Without this,
+        # every ``require_permission`` route 403s the moment OpenFGA is
+        # enabled in a deployment.
+        #
+        # No-op for service principals (their scope tokens are explicit)
+        # and for users without a role claim (e.g. transitional state).
+        # OpenFGA returns HTTP 400 when the tuple already exists — that's
+        # the steady-state path; we swallow it as success.
+        if (
+            not user.is_service
+            and user.app_metadata
+            and user.active_tenant_id
+        ):
+            tuple_role = user.app_metadata.get("role")
+            if isinstance(tuple_role, str) and tuple_role:
+                try:
+                    await fga.write_tuple(
+                        principal,
+                        tuple_role,
+                        f"tenant:{user.active_tenant_id}",
+                    )
+                except OpenFGAError:
+                    pass
 
         cached = await cache.get(principal, action, object_)
         if cached is not None:

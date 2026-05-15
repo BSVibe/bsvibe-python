@@ -39,12 +39,15 @@ def _build_app(
     settings: Settings,
     *,
     fga_check: Callable[..., bool] | None = None,
+    fga_write_raises: BaseException | None = None,
 ) -> FastAPI:
     # Reset process-wide singletons (cache, OpenFGA client) so tests are
     # hermetic — otherwise a `True` decision cached by an earlier test bleeds
     # into a later "denied" test.
     deps_mod.reset_singletons()
     app = FastAPI()
+
+    writes: list[tuple[str, str, str]] = []
 
     class FakeFGA:
         async def check(self, user: str, relation: str, object_: str, **_: Any) -> bool:
@@ -55,7 +58,14 @@ def _build_app(
         async def list_objects(self, *args: Any, **kwargs: Any) -> list[str]:
             return []
 
+        async def write_tuple(self, user: str, relation: str, object_: str) -> None:
+            writes.append((user, relation, object_))
+            if fga_write_raises is not None:
+                raise fga_write_raises
+
     fake_fga = FakeFGA()
+    # Expose the writes list so lazy-provisioning tests can inspect it.
+    app.state.fga_writes = writes  # type: ignore[attr-defined]
 
     app.dependency_overrides[deps_mod.get_settings_dep] = lambda: settings
     app.dependency_overrides[deps_mod.get_openfga_client] = lambda: fake_fga
@@ -124,6 +134,62 @@ def test_require_permission_allows_when_fga_allows(deps_settings, make_user_jwt)
         token = make_user_jwt(sub="u-1")
         resp = client.get("/projects/p1", headers=_bearer(token))
         assert resp.status_code == 200
+
+
+def test_require_permission_lazy_writes_tenant_tuple_from_app_metadata_role(
+    deps_settings, make_user_jwt
+) -> None:
+    """Lazy auto-provision: when the caller's JWT carries ``app_metadata.role`` +
+    ``active_tenant_id``, ``require_permission`` writes the
+    ``user:X <role> tenant:T`` tuple before checking. This bridges the missing
+    platform tenant-provisioning gap — without it every require_permission
+    route 403s the moment OpenFGA is enabled."""
+    app = _build_app(deps_settings, fga_check=lambda u, r, o: True)
+    with TestClient(app) as client:
+        token = make_user_jwt(
+            sub="u-1",
+            active_tenant_id="t-9",
+            extra_claims={"app_metadata": {"role": "owner", "tenant_id": "t-9"}},
+        )
+        resp = client.get("/projects/p1", headers=_bearer(token))
+        assert resp.status_code == 200
+    assert ("user:u-1", "owner", "tenant:t-9") in app.state.fga_writes  # type: ignore[attr-defined]
+
+
+def test_require_permission_lazy_write_swallows_openfga_error(
+    deps_settings, make_user_jwt
+) -> None:
+    """OpenFGA returns HTTP 400 for duplicate-write — that's the steady-state
+    path. ``require_permission`` swallows ``OpenFGAError`` and continues to
+    the check; a healthy tuple-already-exists must not 500 the request."""
+    from bsvibe_authz.client import OpenFGAError
+
+    app = _build_app(
+        deps_settings,
+        fga_check=lambda u, r, o: True,
+        fga_write_raises=OpenFGAError(400, {"error": "tuple_exists"}),
+    )
+    with TestClient(app) as client:
+        token = make_user_jwt(
+            sub="u-1",
+            active_tenant_id="t-9",
+            extra_claims={"app_metadata": {"role": "admin", "tenant_id": "t-9"}},
+        )
+        resp = client.get("/projects/p1", headers=_bearer(token))
+        assert resp.status_code == 200
+
+
+def test_require_permission_no_lazy_write_without_role_claim(
+    deps_settings, make_user_jwt
+) -> None:
+    """Users without an ``app_metadata.role`` claim skip the tuple write —
+    nothing to provision. The check still runs normally."""
+    app = _build_app(deps_settings, fga_check=lambda u, r, o: True)
+    with TestClient(app) as client:
+        token = make_user_jwt(sub="u-1", active_tenant_id="t-9")
+        resp = client.get("/projects/p1", headers=_bearer(token))
+        assert resp.status_code == 200
+    assert app.state.fga_writes == []  # type: ignore[attr-defined]
 
 
 def test_require_permission_403_when_fga_denies(deps_settings, make_user_jwt) -> None:
@@ -257,7 +323,12 @@ def _build_dispatch_app(settings: Settings, fake_client: Any | None = None) -> F
     return app
 
 
-def test_dispatch_opaque_token_active(opaque_settings) -> None:
+def test_dispatch_legacy_opaque_prefix_now_401(opaque_settings) -> None:
+    """Tier-2 retirement: the legacy ``bsv_sk_*`` opaque-token prefix
+    dispatch was removed. A ``bsv_sk_*`` token is now indistinguishable
+    from any non-JWT garbage — it skips introspection (failing
+    `_looks_like_jwt`) and 401s. The introspection fallback only runs for
+    JWT-shaped tokens (PAT JWTs from the device-authorization grant)."""
     fake = _FakeIntrospectionClient(
         IntrospectionResponse(
             active=True,
@@ -269,26 +340,10 @@ def test_dispatch_opaque_token_active(opaque_settings) -> None:
     app = _build_dispatch_app(opaque_settings, fake_client=fake)
     with TestClient(app) as client:
         resp = client.get("/me", headers=_bearer("bsv_sk_live_token"))
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["id"] == "user-123"
-        assert body["scope"] == ["bsgateway:models:read"]
-
-
-def test_dispatch_opaque_token_inactive_returns_401(opaque_settings) -> None:
-    fake = _FakeIntrospectionClient(IntrospectionResponse(active=False))
-    app = _build_dispatch_app(opaque_settings, fake_client=fake)
-    with TestClient(app) as client:
-        resp = client.get("/me", headers=_bearer("bsv_sk_dead_token"))
         assert resp.status_code == 401
-
-
-def test_dispatch_opaque_token_falls_back_to_jwt_when_introspection_disabled(deps_settings, make_user_jwt) -> None:
-    """No introspection_url configured -> bsv_sk_ tokens still go to JWT path (will fail)."""
-    app = _build_dispatch_app(deps_settings)
-    with TestClient(app) as client:
-        resp = client.get("/me", headers=_bearer("bsv_sk_unknown"))
-        assert resp.status_code == 401  # not a valid JWT
+    # Confirm introspection was never called — the legacy prefix-dispatch
+    # is gone and ``bsv_sk_*`` no longer triggers a network round-trip.
+    assert fake.calls == []
 
 
 def test_dispatch_jwt_token(deps_settings, make_user_jwt) -> None:
