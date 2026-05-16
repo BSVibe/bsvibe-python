@@ -47,7 +47,6 @@ from .deps import (
     get_settings_dep,
     require_admin,
     require_permission,
-    require_scope,
     reset_singletons,
 )
 from .introspection import IntrospectionClient
@@ -66,7 +65,7 @@ from .types import (
     User,
 )
 
-__version__ = "1.5.0"
+__version__ = "2.0.0"
 
 __all__ = [
     "AuthError",
@@ -108,7 +107,6 @@ __all__ = [
     "parse_user_token",
     "require_admin",
     "require_permission",
-    "require_scope",
     "reset_settings_cache",
     "reset_singletons",
     "verify_service_jwt",
