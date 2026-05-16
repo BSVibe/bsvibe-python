@@ -399,6 +399,39 @@ async def test_verify_via_introspection_returns_user_on_active(opaque_cache) -> 
     client.introspect.assert_awaited_once_with("bsv_sk_abc")
 
 
+async def test_verify_via_introspection_propagates_role_into_app_metadata(
+    opaque_cache,
+) -> None:
+    """Tier 5: an introspection response carrying ``role`` surfaces it on
+    ``User.app_metadata`` so PAT callers drive require_permission's lazy
+    tuple-provision + require_admin."""
+    from bsvibe_authz.auth import verify_via_introspection
+
+    client = AsyncMock()
+    client.introspect = AsyncMock(
+        return_value=_make_active_response(role="admin"),
+    )
+
+    user = await verify_via_introspection("bsv_sk_abc", client, opaque_cache)
+
+    assert user.app_metadata == {"role": "admin"}
+
+
+async def test_verify_via_introspection_no_role_leaves_app_metadata_empty(
+    opaque_cache,
+) -> None:
+    """No ``role`` in the introspection response → empty app_metadata (no
+    spurious key)."""
+    from bsvibe_authz.auth import verify_via_introspection
+
+    client = AsyncMock()
+    client.introspect = AsyncMock(return_value=_make_active_response())
+
+    user = await verify_via_introspection("bsv_sk_abc", client, opaque_cache)
+
+    assert user.app_metadata == {}
+
+
 async def test_verify_via_introspection_raises_on_inactive(opaque_cache) -> None:
     from bsvibe_authz.auth import AuthError, verify_via_introspection
     from bsvibe_authz.types import IntrospectionResponse
