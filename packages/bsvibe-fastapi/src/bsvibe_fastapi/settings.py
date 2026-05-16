@@ -26,7 +26,10 @@ from bsvibe_core import BsvibeSettings, csv_list_field, parse_csv_list
 
 _DEFAULT_ORIGINS: list[str] = ["http://localhost:3500"]
 _DEFAULT_METHODS: list[str] = ["GET", "POST", "PUT", "PATCH", "DELETE"]
-_DEFAULT_HEADERS: list[str] = ["Authorization", "Content-Type"]
+# ``X-Active-Tenant`` (Tier 3.2): the raw Supabase JWT carries no tenant
+# claim, so the SPA sends the active tenant as this header. It must be in
+# the CORS allow-list or the browser preflight fails before the request.
+_DEFAULT_HEADERS: list[str] = ["Authorization", "Content-Type", "X-Active-Tenant"]
 
 
 class FastApiSettings(BsvibeSettings):

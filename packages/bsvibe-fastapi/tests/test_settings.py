@@ -82,6 +82,8 @@ class TestCorsExtraSettings:
         assert "POST" in s.cors_allow_methods
         assert "Authorization" in s.cors_allow_headers
         assert "Content-Type" in s.cors_allow_headers
+        # Tier 3.2 — the SPA sends the active tenant as X-Active-Tenant.
+        assert "X-Active-Tenant" in s.cors_allow_headers
 
     def test_credentials_can_be_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("CORS_ALLOW_CREDENTIALS", "false")
