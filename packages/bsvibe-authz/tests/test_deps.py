@@ -48,9 +48,11 @@ def _build_app(
     app = FastAPI()
 
     writes: list[tuple[str, str, str]] = []
+    checks: list[tuple[str, str, str]] = []
 
     class FakeFGA:
         async def check(self, user: str, relation: str, object_: str, **_: Any) -> bool:
+            checks.append((user, relation, object_))
             if fga_check is None:
                 return True
             return fga_check(user, relation, object_)
@@ -64,8 +66,9 @@ def _build_app(
                 raise fga_write_raises
 
     fake_fga = FakeFGA()
-    # Expose the writes list so lazy-provisioning tests can inspect it.
+    # Expose the writes/checks lists so authz tests can inspect them.
     app.state.fga_writes = writes  # type: ignore[attr-defined]
+    app.state.fga_checks = checks  # type: ignore[attr-defined]
 
     app.dependency_overrides[deps_mod.get_settings_dep] = lambda: settings
     app.dependency_overrides[deps_mod.get_openfga_client] = lambda: fake_fga
@@ -93,6 +96,13 @@ def _build_app(
         svc: ServiceKey = Depends(ServiceKeyAuth(audience="bsage")),
     ) -> dict:
         return {"sub": svc.sub, "scope": svc.scope}
+
+    @app.get("/routing")
+    async def routing(
+        user: CurrentUser,
+        _allowed: None = Depends(require_permission("bsgateway.routing.read")),
+    ) -> dict:
+        return {"user": user.id}
 
     return app
 
@@ -198,6 +208,34 @@ def test_require_permission_403_when_fga_denies(deps_settings, make_user_jwt) ->
         token = make_user_jwt(sub="u-1")
         resp = client.get("/projects/p1", headers=_bearer(token))
         assert resp.status_code == 403
+
+
+def test_require_permission_tenant_scoped_relation_is_product_resource_action(
+    deps_settings, make_user_jwt
+) -> None:
+    """Tier 5: a tenant-scoped require_permission check uses the full
+    ``<product>_<resource>_<action>`` relation (not the bare action), so each
+    resource×action is a distinct OpenFGA relation on the tenant type."""
+    app = _build_app(deps_settings, fga_check=lambda u, r, o: True)
+    with TestClient(app) as client:
+        token = make_user_jwt(sub="u-1", active_tenant_id="t-1")
+        resp = client.get("/routing", headers=_bearer(token))
+        assert resp.status_code == 200
+    assert ("user:u-1", "bsgateway_routing_read", "tenant:t-1") in app.state.fga_checks  # type: ignore[attr-defined]
+
+
+def test_require_permission_resource_scoped_relation_stays_bare_action(
+    deps_settings, make_user_jwt
+) -> None:
+    """An instance-scoped check (resource_type + resource_id_param) keeps the
+    bare ``<action>`` relation against ``<resource_type>:<id>`` — the
+    resource-instance types in the model define plain read/write/delete."""
+    app = _build_app(deps_settings, fga_check=lambda u, r, o: True)
+    with TestClient(app) as client:
+        token = make_user_jwt(sub="u-1", active_tenant_id="t-1")
+        resp = client.get("/projects/p1", headers=_bearer(token))
+        assert resp.status_code == 200
+    assert ("user:u-1", "read", "project:p1") in app.state.fga_checks  # type: ignore[attr-defined]
 
 
 def test_service_key_auth_accepts_valid_service_token(deps_settings, make_service_jwt) -> None:

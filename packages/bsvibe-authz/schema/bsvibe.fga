@@ -1,66 +1,45 @@
 model
   schema 1.1
 
-# BSVibe Authorization Model — single source of truth (Phase 0 P0.4).
+# BSVibe Authorization Model — GENERATED FILE, do not hand-edit.
 #
-# Source: BSVibe_Auth_Design.md §3 (option C — RBAC + relation + caveat).
+# Source: schema/permission_matrix.yaml. Regenerate with
+#   uv run --with pyyaml python scripts/gen_fga.py
 #
-# This file is the canonical schema for production deployments. The copy
-# under ``BSVibe-Auth/infra/openfga/bsvibe.fga`` is byte-identical and
-# kept in sync by review (drift-guard CI step).
-#
-# Conventions
-#   - Permission identifiers follow `<product>.<resource>.<action>` (Auth_Design §2.5).
-#   - 4 fixed roles per Auth_Design §2.3 (owner / admin / member / viewer).
-#   - 4 fixed plans per Auth_Design §2.4 (free / pro / team / enterprise).
-#   - Hierarchy: owner ⊃ admin ⊃ member ⊃ viewer (encoded as `or` unions).
-#
-# Action mapping (2026-05-03 prod hardening) — every resource type
-# defines ``read``, ``write``, ``delete`` relations so ``bsvibe_authz``'s
-# permission identifier ``<product>.<resource>.<action>`` resolves
-# directly to an OpenFGA relation. The action relation is a thin alias
-# over the role hierarchy:
-#   read    = viewer
-#   write   = editor (or admin if no editor relation exists)
-#   execute = write  (BSage plugins.execute and similar write-class ops)
-#   delete  = owner / admin / editor depending on resource semantics
+# Tier 5 (2026-05-16): per-resource granularity. Each
+# `<product>.<resource>.<action>` permission is a distinct relation on
+# the `tenant` type, mapped to a minimum role. Resource-instance types
+# (project/task/vault/note/rule/apikey/cost_report/alert) were removed —
+# no route did instance-scoped checks.
 
 # ─── Identity types ───────────────────────────────────────────────
-
 type user
 
-# Service identity — long-lived JWT subjects (sub: "service:<name>").
-# Granted resource access just like users. See Auth_Design §7.
 type service
 
 # ─── Platform-wide ────────────────────────────────────────────────
-
 type system
   relations
     define admin: [user]
     define audit_reader: [user] or admin
     define support: [user] or admin
-    # Action aliases
-    define read: audit_reader
-    define write: admin
-    define delete: admin
 
 # ─── Subscription plan ────────────────────────────────────────────
-#
-# Plan objects are seeded at bootstrap: plan:free, plan:pro, plan:team,
-# plan:enterprise. Each tenant has exactly one `plan` relation.
-#
-# Plans are platform-managed; tenants can ``read`` (to discover their
-# subscription) but never write/delete via the per-tenant API.
-
 type plan
   relations
     define subscriber: [tenant]
-    # Action aliases — every subscriber (= tenant member) can read.
     define read: subscriber
 
-# ─── Tenant ───────────────────────────────────────────────────────
+# ─── Feature gating (caveat-based) ────────────────────────────────
+type feature
+  relations
+    define enabled_for: [plan]
+    define read: enabled_for
 
+# ─── Tenant ───────────────────────────────────────────────────────
+# 4 fixed roles, hierarchical: owner ⊃ admin ⊃ member ⊃ viewer.
+# Per-resource relations below are generated from permission_matrix.yaml;
+# each is a thin alias over the role hierarchy.
 type tenant
   relations
     define owner: [user]
@@ -68,115 +47,74 @@ type tenant
     define member: [user, service] or admin
     define viewer: [user, service] or member
     define plan: [plan]
-    # Action aliases
-    define read: viewer
-    define write: admin
-    define execute: write
-    define create: admin
-    define delete: owner
-
-# ─── Feature gating (caveat-based) ────────────────────────────────
-#
-# Each feature object resolves enabled_for via its tenant's plan.
-# Example seeds (set with ``fga tuple write``):
-#   feature:agent_execute   plan:pro / plan:team / plan:enterprise
-#   feature:multi_tenant_admin   plan:team / plan:enterprise
-#   feature:audit_log   plan:enterprise
-
-type feature
-  relations
-    define enabled_for: [plan]
-    # Read access flows through the plan-membership chain.
-    define read: enabled_for
-
-# ─── BSNexus resources ────────────────────────────────────────────
-
-type project
-  relations
-    define tenant: [tenant]
-    define owner: [user]
-    define editor: [user, service] or owner or admin from tenant
-    define viewer: [user, service] or editor or member from tenant
-    # Action aliases
-    define read: viewer
-    define write: editor
-    define delete: owner
-
-type task
-  relations
-    define project: [project]
-    define assignee: [user]
-    define viewer: [user, service] or assignee or viewer from project
-    define editor: [user, service] or assignee or editor from project
-    # Action aliases — task lifecycle (delete = editor; assignees may
-    # delete their own task).
-    define read: viewer
-    define write: editor
-    define delete: editor
-
-# ─── BSGateway resources ──────────────────────────────────────────
-
-type rule
-  relations
-    define tenant: [tenant]
-    define editor: [user, service] or admin from tenant
-    define viewer: [user, service] or member from tenant
-    # Action aliases
-    define read: viewer
-    define write: editor
-    define delete: editor
-
-type apikey
-  relations
-    define tenant: [tenant]
-    define manager: [user, service] or admin from tenant
-    define viewer: [user, service] or admin from tenant
-    # Action aliases
-    define read: viewer
-    define write: manager
-    define delete: manager
-
-# ─── BSupervisor resources ────────────────────────────────────────
-
-type cost_report
-  relations
-    define tenant: [tenant]
-    define viewer: [user, service] or member from tenant
-    define exporter: [user, service] or admin from tenant
-    # Action aliases — exports are write-class operations.
-    define read: viewer
-    define write: exporter
-    define delete: exporter
-
-type alert
-  relations
-    define tenant: [tenant]
-    define viewer: [user, service] or member from tenant
-    define editor: [user, service] or admin from tenant
-    # Action aliases
-    define read: viewer
-    define write: editor
-    define delete: editor
-
-# ─── BSage resources ──────────────────────────────────────────────
-
-type vault
-  relations
-    define tenant: [tenant]
-    define owner: [user]
-    define editor: [user, service] or owner or admin from tenant
-    define viewer: [user, service] or editor or member from tenant
-    # Action aliases
-    define read: viewer
-    define write: editor
-    define delete: owner
-
-type note
-  relations
-    define vault: [vault]
-    define editor: [user, service] or editor from vault
-    define viewer: [user, service] or viewer from vault
-    # Action aliases
-    define read: viewer
-    define write: editor
-    define delete: editor
+    # bsage
+    define bsage_canonicalization_apply: admin
+    define bsage_canonicalization_draft: member
+    define bsage_canonicalization_read: viewer
+    define bsage_chat_write: member
+    define bsage_config_read: admin
+    define bsage_config_write: admin
+    define bsage_decisions_write: member
+    define bsage_knowledge_read: viewer
+    define bsage_knowledge_write: member
+    define bsage_notify_write: member
+    define bsage_plugins_execute: member
+    define bsage_plugins_install: admin
+    define bsage_plugins_read: viewer
+    define bsage_vault_read: viewer
+    define bsage_vault_write: member
+    # bsgateway
+    define bsgateway_audit_read: admin
+    define bsgateway_execute_write: member
+    define bsgateway_feedback_read: viewer
+    define bsgateway_feedback_write: member
+    define bsgateway_models_read: viewer
+    define bsgateway_models_write: member
+    define bsgateway_presets_read: viewer
+    define bsgateway_presets_write: member
+    define bsgateway_routes_create: member
+    define bsgateway_routes_read: viewer
+    define bsgateway_routes_write: member
+    define bsgateway_routing_read: viewer
+    define bsgateway_routing_write: member
+    define bsgateway_tenants_read: admin
+    define bsgateway_tenants_write: admin
+    define bsgateway_usage_read: viewer
+    define bsgateway_workers_read: admin
+    define bsgateway_workers_write: admin
+    # bsnexus
+    define bsnexus_brief_read: viewer
+    define bsnexus_decisions_read: viewer
+    define bsnexus_decisions_write: member
+    define bsnexus_deliverables_delete: admin
+    define bsnexus_deliverables_read: viewer
+    define bsnexus_deliverables_write: member
+    define bsnexus_directions_read: viewer
+    define bsnexus_directions_write: member
+    define bsnexus_events_read: viewer
+    define bsnexus_executor_config_read: admin
+    define bsnexus_executor_config_write: admin
+    define bsnexus_integrations_delete: admin
+    define bsnexus_integrations_read: admin
+    define bsnexus_integrations_write: admin
+    define bsnexus_projects_delete: admin
+    define bsnexus_projects_read: viewer
+    define bsnexus_projects_write: member
+    define bsnexus_repo_branch_read: admin
+    define bsnexus_repo_config_delete: admin
+    define bsnexus_repo_config_read: admin
+    define bsnexus_repo_config_write: admin
+    define bsnexus_repo_pull_request_read: admin
+    define bsnexus_repo_pull_request_write: admin
+    define bsnexus_requests_read: viewer
+    define bsnexus_requests_write: member
+    define bsnexus_workspace_files_read: viewer
+    define bsnexus_workspace_files_write: member
+    # bsupervisor
+    define bsupervisor_agents_read: viewer
+    define bsupervisor_agents_write: admin
+    define bsupervisor_audit_read: admin
+    define bsupervisor_incidents_read: viewer
+    define bsupervisor_incidents_write: admin
+    define bsupervisor_settings_read: admin
+    define bsupervisor_settings_write: admin

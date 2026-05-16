@@ -261,7 +261,13 @@ def require_permission(
     -------
     The OpenFGA tuple key is built as:
         user      = "user:<user.id>"  (or "service:..." if is_service)
-        relation  = the *action* portion of `permission` (e.g. "read")
+        relation  = tenant-scoped check  -> "<product>_<resource>_<action>"
+                    (e.g. "bsgateway_routing_read") so each resource×action
+                    is a distinct relation on the tenant type — per-resource
+                    granularity, Tier 5.
+                    instance-scoped check -> the bare *action* ("read"),
+                    matching the plain read/write/delete relations on the
+                    resource-instance types.
         object    = "<resource_type>:<resource_id>"
                     where ``resource_id`` is taken from ``request.path_params``
                     using ``resource_id_param``. If neither is set, the
@@ -291,6 +297,9 @@ def require_permission(
             f"require_permission: invalid permission {permission!r} (expected '<product>.<resource>.<action>')",
         )
     action = parts[2]
+    # Tier 5: tenant-scoped relation encodes the full triple so per-resource
+    # permissions are distinct OpenFGA relations on the tenant type.
+    tenant_relation = "_".join(parts)
     resolve_principal = principal_dep or get_current_user
 
     async def _dep(
@@ -312,7 +321,7 @@ def require_permission(
             return
         principal = user.id if user.is_service else f"user:{user.id}"
 
-        # Resolve object identifier.
+        # Resolve object identifier + relation.
         if resource_type and resource_id_param:
             resource_id = request.path_params.get(resource_id_param)
             if not resource_id:
@@ -321,6 +330,7 @@ def require_permission(
                     detail=f"missing path param {resource_id_param!r}",
                 )
             object_ = f"{resource_type}:{resource_id}"
+            relation = action
         else:
             if not user.active_tenant_id:
                 raise HTTPException(
@@ -328,6 +338,7 @@ def require_permission(
                     detail="no active tenant in session",
                 )
             object_ = f"tenant:{user.active_tenant_id}"
+            relation = tenant_relation
 
         # Lazy auto-provision: ensure the caller's role tuple exists on
         # the tenant before the check. This bridges the missing-platform-
@@ -357,12 +368,12 @@ def require_permission(
                 except OpenFGAError:
                     pass
 
-        cached = await cache.get(principal, action, object_)
+        cached = await cache.get(principal, relation, object_)
         if cached is not None:
             allowed = cached
         else:
-            allowed = await fga.check(principal, action, object_)
-            await cache.set(principal, action, object_, allowed)
+            allowed = await fga.check(principal, relation, object_)
+            await cache.set(principal, relation, object_, allowed)
 
         if not allowed:
             raise HTTPException(
