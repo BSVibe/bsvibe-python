@@ -686,6 +686,28 @@ def test_x_active_tenant_flows_into_require_permission(deps_settings, make_user_
     assert ("user:u-1", "bsgateway_routing_read", "tenant:t-header") in app.state.fga_checks  # type: ignore[attr-defined]
 
 
+async def test_get_current_user_direct_call_without_fastapi_params(
+    deps_settings, make_user_jwt
+) -> None:
+    """get_current_user is a FastAPI dependency, but products re-wrap it and
+    call it *directly* (e.g. BSNexus `core/auth.py::_dispatch_token`). A direct
+    caller that omits the FastAPI-injected ``x_active_tenant`` / ``fga`` params
+    receives the unresolved ``Header()`` / ``Depends()`` sentinels as values —
+    the ``Header`` sentinel is truthy, so without normalisation it would drive
+    the X-Active-Tenant branch into ``<Depends>.check`` and AttributeError.
+    The library must skip the header path for direct callers, not crash."""
+    deps_mod.reset_singletons()
+    token = make_user_jwt(sub="u-1", active_tenant_id="t-jwt")
+    user = await deps_mod.get_current_user(
+        authorization=f"Bearer {token}",
+        settings=deps_settings,
+        introspection_client=None,
+        introspection_cache=IntrospectionCache(ttl_s=30),
+    )
+    assert user.id == "u-1"
+    assert user.active_tenant_id == "t-jwt"
+
+
 def test_get_current_user_verifies_raw_supabase_es256_jwt(monkeypatch) -> None:
     """Tier 3.2 collapse path: get_current_user verifies a raw Supabase-shaped
     ES256 JWT via JWKS (aud=authenticated) — no wrapped HS256 layer, and no

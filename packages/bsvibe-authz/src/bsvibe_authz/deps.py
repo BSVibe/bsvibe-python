@@ -246,6 +246,15 @@ async def get_current_user(
     introspection_cache: IntrospectionCache = Depends(get_introspection_cache),
     fga: FGAClientProtocol = Depends(get_openfga_client),
 ) -> User:
+    # get_current_user is a FastAPI dependency, but products re-wrap it and
+    # call it directly (e.g. BSNexus core/auth.py, combined_principal). A
+    # direct caller that omits a FastAPI-injected param receives the
+    # unresolved Header()/Depends() default object as the value. Normalise
+    # x_active_tenant so a non-str sentinel is treated as absent — the
+    # X-Active-Tenant path (which needs a real fga client) is then skipped
+    # for direct callers; they opt in by passing a real header value + fga.
+    if not isinstance(x_active_tenant, str):
+        x_active_tenant = None
     token = _extract_bearer(authorization)
     # Demo bypass — accept tokens issued by the demo backend's JWT secret
     # (separate from prod user_jwt_secret) so demo deployments do not need
