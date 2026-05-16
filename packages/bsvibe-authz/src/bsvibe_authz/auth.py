@@ -173,12 +173,20 @@ async def verify_via_introspection(
         logger.info("introspection_token_inactive", token_sha256=token_sha256)
         raise AuthError("token is not active")
 
+    # Tier 5: surface the introspected role into app_metadata so a
+    # PAT-authenticated caller drives require_permission's lazy
+    # tuple-provisioning and passes require_admin — both read
+    # ``app_metadata.role``. Without this, PAT (CLI/MCP) requests carry no
+    # role and every OpenFGA-backed route 403s.
+    app_metadata = {"role": response.role} if response.role else {}
+
     return User(
         id=response.sub or "",
         active_tenant_id=response.tenant,
         scope=list(response.scope or []),
         is_service=False,
         email=None,
+        app_metadata=app_metadata,
     )
 
 

@@ -120,6 +120,11 @@ class IntrospectionResponse(BaseModel):
     exp: int | None = None
     client_id: str | None = None
     username: str | None = None
+    # Tier 5: the caller's tenant role (owner/admin/member/viewer) for the
+    # introspected token's tenant. Lets verify_via_introspection populate
+    # User.app_metadata so PAT requests drive require_permission's lazy
+    # tuple-provisioning + require_admin — both otherwise dead for PATs.
+    role: str | None = None
 
     @field_validator("scope", mode="before")
     @classmethod

@@ -310,7 +310,7 @@ requires-dist = [
 
 [[package]]
 name = "bsvibe-authz"
-version = "1.3.0"
+version = "1.4.0"
 source = { editable = "packages/bsvibe-authz" }
 dependencies = [
     { name = "bsvibe-core" },
