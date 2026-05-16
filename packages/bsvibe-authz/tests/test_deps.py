@@ -14,7 +14,6 @@ from bsvibe_authz.deps import (
     ServiceKey,
     ServiceKeyAuth,
     require_permission,
-    require_scope,
 )
 from bsvibe_authz.settings import Settings
 from bsvibe_authz.types import IntrospectionResponse, User
@@ -323,7 +322,7 @@ def test_tenant_scoped_403_when_no_active_tenant(deps_settings, user_jwt_secret,
 
 
 # ---------------------------------------------------------------------------
-# TASK-006: dispatch + require_scope
+# TASK-006: token dispatch
 # ---------------------------------------------------------------------------
 @pytest.fixture
 def opaque_settings(deps_settings: Settings) -> Settings:
@@ -467,59 +466,6 @@ def test_dispatch_non_jwt_garbage_does_not_call_introspection(opaque_settings) -
         resp = client.get("/me", headers=_bearer("not-a-jwt"))
         assert resp.status_code == 401
         assert fake.calls == []
-
-
-# ---- require_scope ---------------------------------------------------------
-
-
-def _scope_app(user: User, required: str) -> FastAPI:
-    deps_mod.reset_singletons()
-    app = FastAPI()
-    app.dependency_overrides[deps_mod.get_current_user] = lambda: user
-
-    @app.get("/scoped")
-    async def scoped(_dep: None = Depends(require_scope(required))) -> dict:
-        return {"ok": True}
-
-    return app
-
-
-def test_require_scope_exact_match() -> None:
-    user = User(id="u-1", scope=["bsgateway:models:read"])
-    with TestClient(_scope_app(user, "bsgateway:models:read")) as client:
-        resp = client.get("/scoped")
-        assert resp.status_code == 200
-
-
-def test_require_scope_star_no_longer_grants_all() -> None:
-    """Wildcard `*` is intentionally NOT a free pass after the bootstrap-path
-    retirement. A token with literal scope `*` must still match exactly to
-    grant `*` (and nothing else)."""
-    user = User(id="u-1", scope=["*"])
-    with TestClient(_scope_app(user, "anything:goes")) as client:
-        resp = client.get("/scoped")
-        assert resp.status_code == 403
-
-
-def test_require_scope_prefix_wildcard() -> None:
-    user = User(id="u-1", scope=["bsgateway:*"])
-    with TestClient(_scope_app(user, "bsgateway:models:write")) as client:
-        resp = client.get("/scoped")
-        assert resp.status_code == 200
-
-
-def test_require_scope_403_when_missing() -> None:
-    user = User(id="u-1", scope=["bsgateway:models:read"])
-    with TestClient(_scope_app(user, "bsgateway:models:write")) as client:
-        resp = client.get("/scoped")
-        assert resp.status_code == 403
-
-
-def test_require_scope_empty_scope_403() -> None:
-    user = User(id="u-1", scope=[])
-    with TestClient(_scope_app(user, "anything")) as client:
-        resp = client.get("/scoped")
-        assert resp.status_code == 403
 
 
 # ---------------------------------------------------------------------------
