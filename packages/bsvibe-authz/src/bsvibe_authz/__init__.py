@@ -35,6 +35,8 @@ from .deps import (
     FGAClientProtocol,
     ServiceKey,
     ServiceKeyAuth,
+    check_permission,
+    check_tenant_permission,
     combined_principal,
     get_active_tenant_id,
     get_current_user,
@@ -64,7 +66,7 @@ from .types import (
     User,
 )
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 __all__ = [
     "AuthError",
@@ -92,6 +94,8 @@ __all__ = [
     "TenantType",
     "User",
     "__version__",
+    "check_permission",
+    "check_tenant_permission",
     "combined_principal",
     "get_active_tenant_id",
     "get_current_user",

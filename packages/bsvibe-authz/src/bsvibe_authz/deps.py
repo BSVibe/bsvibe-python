@@ -246,6 +246,103 @@ def get_active_tenant_id(user: CurrentUser) -> str:
 
 
 # ---------------------------------------------------------------------------
+# check_permission — core OpenFGA check, shared by require_permission (REST)
+# and the MCP tool dispatcher (no FastAPI request).
+# ---------------------------------------------------------------------------
+async def check_permission(
+    *,
+    user: User,
+    relation: str,
+    object_: str,
+    fga: FGAClientProtocol,
+    cache: PermissionCache,
+    settings: Settings,
+) -> bool:
+    """Run the OpenFGA `check(user, relation, object)` with lazy role-tuple
+    provisioning + 30s cache. Returns True when allowed.
+
+    Permissive (True) for demo sessions and when OpenFGA is unconfigured
+    (`settings.openfga_api_url` empty) — same posture as the
+    `require_permission` FastAPI dependency. Used by both that dependency
+    and the MCP tool dispatcher so REST and MCP enforce one model.
+    """
+    if user.is_demo:
+        return True
+    if not settings.openfga_api_url:
+        return True
+
+    principal = user.id if user.is_service else f"user:{user.id}"
+
+    # Lazy auto-provision the caller's role tuple before the check —
+    # bridges the platform tenant-provisioning gap. No-op for service
+    # principals / users without a role claim. OpenFGA 400 (tuple exists)
+    # is the steady-state path; swallow it.
+    if not user.is_service and user.app_metadata and user.active_tenant_id:
+        tuple_role = user.app_metadata.get("role")
+        if isinstance(tuple_role, str) and tuple_role:
+            try:
+                await fga.write_tuple(
+                    principal,
+                    tuple_role,
+                    f"tenant:{user.active_tenant_id}",
+                )
+            except OpenFGAError:
+                pass
+
+    cached = await cache.get(principal, relation, object_)
+    if cached is not None:
+        return cached
+    allowed = await fga.check(principal, relation, object_)
+    await cache.set(principal, relation, object_, allowed)
+    return allowed
+
+
+def _parse_permission(permission: str) -> tuple[str, str]:
+    """Validate a `<product>.<resource>.<action>` permission identifier.
+
+    Returns `(action, tenant_relation)` where `tenant_relation` is the
+    full `<product>_<resource>_<action>` OpenFGA relation for a
+    tenant-scoped check.
+    """
+    parts = permission.split(".")
+    if len(parts) != 3:
+        raise ValueError(
+            f"invalid permission {permission!r} (expected '<product>.<resource>.<action>')",
+        )
+    return parts[2], "_".join(parts)
+
+
+async def check_tenant_permission(
+    user: User,
+    permission: str,
+    *,
+    fga: FGAClientProtocol,
+    cache: PermissionCache,
+    settings: Settings,
+) -> bool:
+    """Tenant-scoped permission check keyed by a `<product>.<resource>.<action>`
+    string. For the MCP tool dispatcher, which has no FastAPI `Request`.
+
+    Returns False when the caller has no active tenant (cannot resolve the
+    `tenant:<id>` object) — unless OpenFGA is unconfigured / demo, in which
+    case `check_permission` returns True permissively.
+    """
+    _action, tenant_relation = _parse_permission(permission)
+    if user.is_demo or not settings.openfga_api_url:
+        return True
+    if not user.active_tenant_id:
+        return False
+    return await check_permission(
+        user=user,
+        relation=tenant_relation,
+        object_=f"tenant:{user.active_tenant_id}",
+        fga=fga,
+        cache=cache,
+        settings=settings,
+    )
+
+
+# ---------------------------------------------------------------------------
 # require_permission
 # ---------------------------------------------------------------------------
 def require_permission(
@@ -319,9 +416,10 @@ def require_permission(
         # exist. See module docstring / Auth handoff 2026-05-15.
         if not settings.openfga_api_url:
             return
-        principal = user.id if user.is_service else f"user:{user.id}"
 
-        # Resolve object identifier + relation.
+        # Resolve object identifier + relation (HTTP-specific errors stay
+        # in the dependency; the OpenFGA interaction is delegated to
+        # check_permission so REST + MCP share one code path).
         if resource_type and resource_id_param:
             resource_id = request.path_params.get(resource_id_param)
             if not resource_id:
@@ -340,41 +438,14 @@ def require_permission(
             object_ = f"tenant:{user.active_tenant_id}"
             relation = tenant_relation
 
-        # Lazy auto-provision: ensure the caller's role tuple exists on
-        # the tenant before the check. This bridges the missing-platform-
-        # tenant-provisioning gap (BSVibe writes no runtime tuples today —
-        # the only authoritative source for "user X has role R on tenant
-        # T" is ``app_metadata`` in the wrapped session JWT). Without this,
-        # every ``require_permission`` route 403s the moment OpenFGA is
-        # enabled in a deployment.
-        #
-        # No-op for service principals (their scope tokens are explicit)
-        # and for users without a role claim (e.g. transitional state).
-        # OpenFGA returns HTTP 400 when the tuple already exists — that's
-        # the steady-state path; we swallow it as success.
-        if (
-            not user.is_service
-            and user.app_metadata
-            and user.active_tenant_id
-        ):
-            tuple_role = user.app_metadata.get("role")
-            if isinstance(tuple_role, str) and tuple_role:
-                try:
-                    await fga.write_tuple(
-                        principal,
-                        tuple_role,
-                        f"tenant:{user.active_tenant_id}",
-                    )
-                except OpenFGAError:
-                    pass
-
-        cached = await cache.get(principal, relation, object_)
-        if cached is not None:
-            allowed = cached
-        else:
-            allowed = await fga.check(principal, relation, object_)
-            await cache.set(principal, relation, object_, allowed)
-
+        allowed = await check_permission(
+            user=user,
+            relation=relation,
+            object_=object_,
+            fga=fga,
+            cache=cache,
+            settings=settings,
+        )
         if not allowed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

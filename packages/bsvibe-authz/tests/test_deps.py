@@ -683,3 +683,123 @@ def test_get_introspection_client_singleton(opaque_settings) -> None:
 def test_get_introspection_client_returns_none_when_disabled(deps_settings) -> None:
     deps_mod.reset_singletons()
     assert deps_mod.get_introspection_client(deps_settings) is None
+
+
+# ---------------------------------------------------------------------------
+# check_permission / check_tenant_permission — shared core (Tier 5 Phase 3,
+# used by both require_permission and the MCP tool dispatcher)
+# ---------------------------------------------------------------------------
+class _FakeFGACore:
+    """Minimal FGA double recording checks + writes for the shared-core tests."""
+
+    def __init__(self, allow: bool = True) -> None:
+        self.allow = allow
+        self.checks: list[tuple[str, str, str]] = []
+        self.writes: list[tuple[str, str, str]] = []
+
+    async def check(self, user: str, relation: str, object_: str, **_: object) -> bool:
+        self.checks.append((user, relation, object_))
+        return self.allow
+
+    async def list_objects(self, *a: object, **k: object) -> list[str]:
+        return []
+
+    async def write_tuple(self, user: str, relation: str, object_: str) -> None:
+        self.writes.append((user, relation, object_))
+
+
+def _core_pieces(deps_settings: Settings):
+    from bsvibe_authz.cache import PermissionCache
+
+    return _FakeFGACore(), PermissionCache(ttl_s=30)
+
+
+async def test_check_permission_returns_fga_decision(deps_settings) -> None:
+    from bsvibe_authz import check_permission
+
+    fga, cache = _core_pieces(deps_settings)
+    fga.allow = True
+    user = User(id="u-1", active_tenant_id="t-1", app_metadata={"role": "member"})
+    allowed = await check_permission(
+        user=user,
+        relation="bsgateway_routing_read",
+        object_="tenant:t-1",
+        fga=fga,
+        cache=cache,
+        settings=deps_settings,
+    )
+    assert allowed is True
+    assert ("user:u-1", "bsgateway_routing_read", "tenant:t-1") in fga.checks
+    # lazy-provisions the role tuple from app_metadata.role
+    assert ("user:u-1", "member", "tenant:t-1") in fga.writes
+
+
+async def test_check_permission_denies_when_fga_denies(deps_settings) -> None:
+    from bsvibe_authz import check_permission
+
+    fga, cache = _core_pieces(deps_settings)
+    fga.allow = False
+    user = User(id="u-1", active_tenant_id="t-1")
+    allowed = await check_permission(
+        user=user,
+        relation="bsgateway_routing_write",
+        object_="tenant:t-1",
+        fga=fga,
+        cache=cache,
+        settings=deps_settings,
+    )
+    assert allowed is False
+
+
+async def test_check_permission_permissive_when_openfga_unset(deps_settings) -> None:
+    from bsvibe_authz import check_permission
+
+    fga, cache = _core_pieces(deps_settings)
+    fga.allow = False
+    permissive = deps_settings.model_copy(update={"openfga_api_url": ""})
+    user = User(id="u-1", active_tenant_id="t-1")
+    allowed = await check_permission(
+        user=user,
+        relation="bsgateway_routing_read",
+        object_="tenant:t-1",
+        fga=fga,
+        cache=cache,
+        settings=permissive,
+    )
+    assert allowed is True
+    assert fga.checks == []  # OpenFGA never called
+
+
+async def test_check_tenant_permission_builds_triple_relation(deps_settings) -> None:
+    from bsvibe_authz import check_tenant_permission
+
+    fga, cache = _core_pieces(deps_settings)
+    user = User(id="u-1", active_tenant_id="t-1", app_metadata={"role": "admin"})
+    allowed = await check_tenant_permission(
+        user, "bsupervisor.incidents.read", fga=fga, cache=cache, settings=deps_settings
+    )
+    assert allowed is True
+    assert ("user:u-1", "bsupervisor_incidents_read", "tenant:t-1") in fga.checks
+
+
+async def test_check_tenant_permission_false_without_active_tenant(deps_settings) -> None:
+    from bsvibe_authz import check_tenant_permission
+
+    fga, cache = _core_pieces(deps_settings)
+    user = User(id="u-1", active_tenant_id=None)
+    allowed = await check_tenant_permission(
+        user, "bsage.vault.read", fga=fga, cache=cache, settings=deps_settings
+    )
+    assert allowed is False
+    assert fga.checks == []
+
+
+async def test_check_tenant_permission_rejects_malformed_permission(deps_settings) -> None:
+    from bsvibe_authz import check_tenant_permission
+
+    fga, cache = _core_pieces(deps_settings)
+    user = User(id="u-1", active_tenant_id="t-1")
+    with pytest.raises(ValueError, match="invalid permission"):
+        await check_tenant_permission(
+            user, "bad.permission", fga=fga, cache=cache, settings=deps_settings
+        )
