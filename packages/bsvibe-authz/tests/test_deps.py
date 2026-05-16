@@ -505,12 +505,36 @@ def test_require_permission_enforces_when_openfga_set(deps_settings, make_user_j
 
 
 # ---------------------------------------------------------------------------
-# require_admin — role-gated guard
+# require_admin — OpenFGA `admin` relation guard (Tier 3.2)
 # ---------------------------------------------------------------------------
-def _build_admin_app(settings: Settings, principal_dep: Any | None = None) -> FastAPI:
+def _build_admin_app(
+    settings: Settings,
+    *,
+    principal_dep: Any | None = None,
+    fga_check: Callable[..., bool] | None = None,
+) -> FastAPI:
     deps_mod.reset_singletons()
     app = FastAPI()
+
+    checks: list[tuple[str, str, str]] = []
+    writes: list[tuple[str, str, str]] = []
+
+    class FakeFGA:
+        async def check(self, user: str, relation: str, object_: str, **_: Any) -> bool:
+            checks.append((user, relation, object_))
+            return True if fga_check is None else fga_check(user, relation, object_)
+
+        async def list_objects(self, *a: Any, **k: Any) -> list[str]:
+            return []
+
+        async def write_tuple(self, user: str, relation: str, object_: str) -> None:
+            writes.append((user, relation, object_))
+
+    fake_fga = FakeFGA()
+    app.state.fga_checks = checks  # type: ignore[attr-defined]
+    app.state.fga_writes = writes  # type: ignore[attr-defined]
     app.dependency_overrides[deps_mod.get_settings_dep] = lambda: settings
+    app.dependency_overrides[deps_mod.get_openfga_client] = lambda: fake_fga
     from bsvibe_authz.deps import require_admin
 
     @app.get("/admin")
@@ -520,23 +544,68 @@ def _build_admin_app(settings: Settings, principal_dep: Any | None = None) -> Fa
     return app
 
 
-@pytest.mark.parametrize("role", ["owner", "admin"])
-def test_require_admin_allows_admin_roles(deps_settings, make_user_jwt, role) -> None:
-    app = _build_admin_app(deps_settings)
+def test_require_admin_allows_when_fga_grants_admin(deps_settings, make_user_jwt) -> None:
+    """Tier 3.2: require_admin checks the OpenFGA `admin` relation on the
+    active tenant — no longer the JWT `app_metadata.role` claim."""
+    app = _build_admin_app(deps_settings, fga_check=lambda u, r, o: True)
     with TestClient(app) as client:
-        token = make_user_jwt(sub="u-1", extra_claims={"app_metadata": {"role": role}})
+        token = make_user_jwt(sub="u-1", active_tenant_id="t-1")
         resp = client.get("/admin", headers=_bearer(token))
         assert resp.status_code == 200
+    assert ("user:u-1", "admin", "tenant:t-1") in app.state.fga_checks  # type: ignore[attr-defined]
 
 
-@pytest.mark.parametrize("role", ["member", "viewer", None])
-def test_require_admin_403_for_non_admin(deps_settings, make_user_jwt, role) -> None:
-    app = _build_admin_app(deps_settings)
-    claims = {"app_metadata": {"role": role}} if role is not None else None
+def test_require_admin_403_when_fga_denies_admin(deps_settings, make_user_jwt) -> None:
+    app = _build_admin_app(deps_settings, fga_check=lambda u, r, o: False)
     with TestClient(app) as client:
-        token = make_user_jwt(sub="u-1", extra_claims=claims)
+        token = make_user_jwt(sub="u-1", active_tenant_id="t-1")
         resp = client.get("/admin", headers=_bearer(token))
         assert resp.status_code == 403
+
+
+def test_require_admin_lazy_provisions_role_tuple(deps_settings, make_user_jwt) -> None:
+    """A caller whose JWT still carries `app_metadata.role` drives the same
+    lazy tuple-write `require_permission` uses — back-compat during the
+    wrapped-JWT cutover, before the raw Supabase JWT (no role) takes over."""
+    app = _build_admin_app(deps_settings, fga_check=lambda u, r, o: True)
+    with TestClient(app) as client:
+        token = make_user_jwt(
+            sub="u-1",
+            active_tenant_id="t-1",
+            extra_claims={"app_metadata": {"role": "owner", "tenant_id": "t-1"}},
+        )
+        resp = client.get("/admin", headers=_bearer(token))
+        assert resp.status_code == 200
+    assert ("user:u-1", "owner", "tenant:t-1") in app.state.fga_writes  # type: ignore[attr-defined]
+
+
+def test_require_admin_403_when_no_active_tenant(deps_settings, user_jwt_secret, issuer) -> None:
+    """No active tenant ⇒ no `tenant:<id>` object to check ⇒ 403."""
+    import time
+
+    import jwt
+
+    app = _build_admin_app(deps_settings, fga_check=lambda u, r, o: True)
+    now_ = int(time.time())
+    token = jwt.encode(
+        {"iss": issuer, "sub": "u-1", "aud": "bsvibe", "iat": now_, "exp": now_ + 60},
+        user_jwt_secret,
+        algorithm="HS256",
+    )
+    with TestClient(app) as client:
+        resp = client.get("/admin", headers=_bearer(token))
+        assert resp.status_code == 403
+
+
+def test_require_admin_permissive_when_openfga_unset(permissive_settings, make_user_jwt) -> None:
+    """OpenFGA not deployed ⇒ require_admin passes any authenticated caller —
+    same posture as require_permission's permissive mode."""
+    app = _build_admin_app(permissive_settings, fga_check=lambda u, r, o: False)
+    with TestClient(app) as client:
+        token = make_user_jwt(sub="u-1", active_tenant_id="t-1")
+        resp = client.get("/admin", headers=_bearer(token))
+        assert resp.status_code == 200
+    assert app.state.fga_checks == []  # type: ignore[attr-defined]
 
 
 def test_require_admin_401_without_auth(deps_settings) -> None:
@@ -548,7 +617,7 @@ def test_require_admin_401_without_auth(deps_settings) -> None:
 
 def test_require_admin_allows_service_principal(deps_settings, make_service_jwt) -> None:
     """A verified service JWT (scoped to the audience) is an already-authorized
-    internal caller — require_admin passes it (uses combined_principal)."""
+    internal caller — require_admin passes it without an OpenFGA check."""
     from bsvibe_authz.deps import combined_principal
 
     app = _build_admin_app(deps_settings, principal_dep=combined_principal("bsage"))
@@ -556,6 +625,136 @@ def test_require_admin_allows_service_principal(deps_settings, make_service_jwt)
         token = make_service_jwt(sub="service:bsnexus", aud="bsage", tenant_id="t-1")
         resp = client.get("/admin", headers=_bearer(token))
         assert resp.status_code == 200
+    assert app.state.fga_checks == []  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# X-Active-Tenant header resolution (Tier 3.2)
+# ---------------------------------------------------------------------------
+def test_x_active_tenant_header_overrides_jwt_tenant(deps_settings, make_user_jwt) -> None:
+    """A valid X-Active-Tenant header (caller is an OpenFGA `member`) becomes
+    the effective active tenant, overriding the JWT-carried claim."""
+    app = _build_app(deps_settings, fga_check=lambda u, r, o: True)
+    with TestClient(app) as client:
+        token = make_user_jwt(sub="u-1", active_tenant_id="t-jwt")
+        resp = client.get("/me", headers={**_bearer(token), "X-Active-Tenant": "t-header"})
+        assert resp.status_code == 200
+        assert resp.json()["active_tenant_id"] == "t-header"
+    assert ("user:u-1", "member", "tenant:t-header") in app.state.fga_checks  # type: ignore[attr-defined]
+
+
+def test_x_active_tenant_absent_keeps_jwt_tenant(deps_settings, make_user_jwt) -> None:
+    """Absent header ⇒ the JWT-carried active_tenant_id is kept as a
+    back-compat fallback (the wrapped-JWT path still works until Phase D)."""
+    app = _build_app(deps_settings)
+    with TestClient(app) as client:
+        token = make_user_jwt(sub="u-1", active_tenant_id="t-jwt")
+        resp = client.get("/me", headers=_bearer(token))
+        assert resp.status_code == 200
+        assert resp.json()["active_tenant_id"] == "t-jwt"
+    assert all(r != "member" for _, r, _ in app.state.fga_checks)  # type: ignore[attr-defined]
+
+
+def test_x_active_tenant_403_when_not_member(deps_settings, make_user_jwt) -> None:
+    """Header present but the caller is not an OpenFGA member of it ⇒ 403."""
+    app = _build_app(deps_settings, fga_check=lambda u, r, o: False)
+    with TestClient(app) as client:
+        token = make_user_jwt(sub="u-1", active_tenant_id="t-jwt")
+        resp = client.get("/me", headers={**_bearer(token), "X-Active-Tenant": "t-evil"})
+        assert resp.status_code == 403
+
+
+def test_x_active_tenant_permissive_mode_honors_header_without_fga(permissive_settings, make_user_jwt) -> None:
+    """OpenFGA unset ⇒ the header is honored without a membership check."""
+    app = _build_app(permissive_settings, fga_check=lambda u, r, o: False)
+    with TestClient(app) as client:
+        token = make_user_jwt(sub="u-1", active_tenant_id="t-jwt")
+        resp = client.get("/me", headers={**_bearer(token), "X-Active-Tenant": "t-header"})
+        assert resp.status_code == 200
+        assert resp.json()["active_tenant_id"] == "t-header"
+    assert app.state.fga_checks == []  # type: ignore[attr-defined]
+
+
+def test_x_active_tenant_flows_into_require_permission(deps_settings, make_user_jwt) -> None:
+    """The header-resolved tenant — not the JWT claim — is what a tenant-wide
+    require_permission check runs against."""
+    app = _build_app(deps_settings, fga_check=lambda u, r, o: True)
+    with TestClient(app) as client:
+        token = make_user_jwt(sub="u-1", active_tenant_id="t-jwt")
+        resp = client.get("/routing", headers={**_bearer(token), "X-Active-Tenant": "t-header"})
+        assert resp.status_code == 200
+    assert ("user:u-1", "bsgateway_routing_read", "tenant:t-header") in app.state.fga_checks  # type: ignore[attr-defined]
+
+
+def test_get_current_user_verifies_raw_supabase_es256_jwt(monkeypatch) -> None:
+    """Tier 3.2 collapse path: get_current_user verifies a raw Supabase-shaped
+    ES256 JWT via JWKS (aud=authenticated) — no wrapped HS256 layer, and no
+    tenant claim, so active_tenant_id is None until an X-Active-Tenant header
+    supplies it."""
+    import time
+
+    import jwt as _pyjwt
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    from bsvibe_authz.auth import reset_jwks_cache
+
+    private = ec.generate_private_key(ec.SECP256R1())
+    priv_pem = private.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    pub_pem = private.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+
+    class _StubKey:
+        def __init__(self, key: bytes) -> None:
+            self.key = key
+
+    class _StubJWKSClient:
+        def __init__(self, *_a: Any, **_k: Any) -> None: ...
+
+        def get_signing_key_from_jwt(self, _t: str) -> _StubKey:
+            return _StubKey(pub_pem)
+
+    monkeypatch.setattr(_pyjwt, "PyJWKClient", _StubJWKSClient)
+    reset_jwks_cache()
+
+    settings = Settings(  # type: ignore[call-arg]
+        bsvibe_auth_url="https://auth.bsvibe.dev",
+        openfga_api_url="http://openfga.local:8080",
+        openfga_store_id="store-1",
+        openfga_auth_model_id="model-1",
+        service_token_signing_secret="x",
+        user_jwt_jwks_url="https://proj.supabase.co/auth/v1/.well-known/jwks.json",
+        user_jwt_algorithm="ES256",
+        user_jwt_audience="authenticated",
+    )
+    app = _build_app(settings)
+    now_ = int(time.time())
+    token = _pyjwt.encode(
+        {
+            "iss": "https://proj.supabase.co/auth/v1",
+            "sub": "00000000-0000-0000-0000-0000000000ab",
+            "email": "founder@bsvibe.dev",
+            "aud": "authenticated",
+            "iat": now_,
+            "exp": now_ + 3600,
+        },
+        priv_pem,
+        algorithm="ES256",
+        headers={"kid": "supabase-key-1"},
+    )
+    with TestClient(app) as client:
+        resp = client.get("/me", headers=_bearer(token))
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["id"] == "00000000-0000-0000-0000-0000000000ab"
+        assert body["email"] == "founder@bsvibe.dev"
+        assert body["active_tenant_id"] is None
 
 
 # ---------------------------------------------------------------------------

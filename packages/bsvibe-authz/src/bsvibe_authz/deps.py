@@ -195,11 +195,56 @@ def _try_demo_user(token: str, settings: Settings) -> User | None:
     )
 
 
+async def _resolve_active_tenant(
+    user: User,
+    x_active_tenant: str | None,
+    fga: FGAClientProtocol,
+    settings: Settings,
+) -> User:
+    """Apply the ``X-Active-Tenant`` header to ``user.active_tenant_id``.
+
+    Tier 3.2: the active tenant is an explicit per-request signal, not a
+    JWT claim. When the header is present it is validated against OpenFGA
+    membership (``check(user:<id>, member, tenant:<header>)``) and becomes
+    the effective active tenant. When absent, the JWT-carried
+    ``active_tenant_id`` (top-level claim or ``app_metadata.tenant_id``,
+    resolved by :func:`parse_user_token`) is kept as a back-compat fallback
+    during the wrapped-JWT cutover.
+
+    Service and demo principals are exempt — they carry their own tenant
+    (service-JWT ``tenant_id`` / demo's ephemeral sandbox tenant).
+
+    Permissive mode: when ``settings.openfga_api_url`` is empty OpenFGA is
+    not deployed — the header is honored without a membership check, so
+    non-prod / e2e stacks stay green.
+    """
+    if user.is_demo or user.is_service or not x_active_tenant:
+        return user
+    if settings.openfga_api_url:
+        try:
+            is_member = await fga.check(
+                f"user:{user.id}", "member", f"tenant:{x_active_tenant}"
+            )
+        except OpenFGAError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="tenant membership check failed",
+            ) from exc
+        if not is_member:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="not a member of the requested active tenant",
+            )
+    return user.model_copy(update={"active_tenant_id": x_active_tenant})
+
+
 async def get_current_user(
     authorization: str | None = Header(default=None),
+    x_active_tenant: str | None = Header(default=None),
     settings: Settings = Depends(get_settings_dep),
     introspection_client: IntrospectionClient | None = Depends(get_introspection_client),
     introspection_cache: IntrospectionCache = Depends(get_introspection_cache),
+    fga: FGAClientProtocol = Depends(get_openfga_client),
 ) -> User:
     token = _extract_bearer(authorization)
     # Demo bypass — accept tokens issued by the demo backend's JWT secret
@@ -220,14 +265,20 @@ async def get_current_user(
             # Tier 2 of the 2026-05 auth cleanup; introspection now serves
             # only the PAT JWT path.)
             if introspection_client is not None and _looks_like_jwt(token):
-                return await verify_via_introspection(token, introspection_client, introspection_cache)
+                pat_user = await verify_via_introspection(
+                    token, introspection_client, introspection_cache
+                )
+                return await _resolve_active_tenant(
+                    pat_user, x_active_tenant, fga, settings
+                )
             raise
     except AuthError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(exc),
         ) from exc
-    return parse_user_token(payload)
+    user = parse_user_token(payload)
+    return await _resolve_active_tenant(user, x_active_tenant, fga, settings)
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
@@ -464,11 +515,22 @@ def require_admin(
 ) -> Callable[..., Awaitable[None]]:
     """Build a dependency that asserts the caller is a tenant admin.
 
-    Checks ``app_metadata.role`` (Supabase claim, lifted onto ``User`` by
-    :func:`parse_user_token`) — ``owner`` or ``admin`` pass, anything else
-    403s. Unlike :func:`require_permission`, this is a *real* enforced check
-    in production today (the role claim rides in the JWT — no OpenFGA
-    dependency), so it is the right gate for mutations / admin config.
+    Tier 3.2: checks the OpenFGA ``admin`` relation on the caller's active
+    tenant — ``check(user:<id>, admin, tenant:<active_tenant_id>)``. The
+    model defines ``admin: [user] or owner`` on ``tenant``, so an owner
+    passes too. This replaces the former ``app_metadata.role`` JWT-claim
+    check: once the wrapped session JWT collapses to the raw Supabase JWT
+    (Tier 3.2 Phase D) the role claim no longer rides in the token, so
+    authz must come from OpenFGA — consistent with :func:`require_permission`.
+
+    The shared :func:`check_permission` core handles the 30s decision cache
+    and the lazy role-tuple write — a JWT that *still* carries
+    ``app_metadata.role`` (back-compat, pre-cutover) auto-provisions its
+    ``owner``/``admin`` tuple before the check.
+
+    Permissive mode: when ``settings.openfga_api_url`` is empty OpenFGA is
+    not deployed — the dep passes any authenticated caller, same posture as
+    :func:`require_permission`.
 
     Demo and service principals pass: demo sessions are sandboxed, and a
     verified service JWT scoped to the product audience is an already-
@@ -480,11 +542,31 @@ def require_admin(
     """
     resolve_principal = principal_dep or get_current_user
 
-    async def _dep(user: User = Depends(resolve_principal)) -> None:
+    async def _dep(
+        user: User = Depends(resolve_principal),
+        settings: Settings = Depends(get_settings_dep),
+        cache: PermissionCache = Depends(get_permission_cache),
+        fga: FGAClientProtocol = Depends(get_openfga_client),
+    ) -> None:
         if user.is_demo or user.is_service:
             return
-        role = (user.app_metadata or {}).get("role")
-        if role not in ("owner", "admin"):
+        # Permissive mode — OpenFGA not deployed. Authenticated caller passes.
+        if not settings.openfga_api_url:
+            return
+        if not user.active_tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="no active tenant in session",
+            )
+        allowed = await check_permission(
+            user=user,
+            relation="admin",
+            object_=f"tenant:{user.active_tenant_id}",
+            fga=fga,
+            cache=cache,
+            settings=settings,
+        )
+        if not allowed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="admin role required",
@@ -554,6 +636,7 @@ def combined_principal(
         settings: Settings = Depends(get_settings_dep),
         introspection_client: IntrospectionClient | None = Depends(get_introspection_client),
         introspection_cache: IntrospectionCache = Depends(get_introspection_cache),
+        fga: FGAClientProtocol = Depends(get_openfga_client),
     ) -> User:
         # Try the service-JWT path first. A token that is not a service JWT
         # (wrong signing secret / wrong aud) raises AuthError — fall through
@@ -578,9 +661,11 @@ def combined_principal(
                 )
         return await get_current_user(
             authorization=request.headers.get("Authorization"),
+            x_active_tenant=request.headers.get("X-Active-Tenant"),
             settings=settings,
             introspection_client=introspection_client,
             introspection_cache=introspection_cache,
+            fga=fga,
         )
 
     return _dep
