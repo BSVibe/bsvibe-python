@@ -1,6 +1,6 @@
 [project]
 name = "bsvibe-fastapi"
-version = "0.1.0"
+version = "0.2.0"
 description = "BSVibe shared FastAPI library — CORS, health router, request id middleware"
 requires-python = ">=3.11"
 dependencies = [
